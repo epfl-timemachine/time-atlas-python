@@ -1,0 +1,11 @@
+# Include important files
+include README.md
+include LICENSE
+include pyproject.toml
+
+# Exclude unnecessary files
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude __pycache__
+global-exclude .DS_Store
+global-exclude *.pkl
