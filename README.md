@@ -4,7 +4,7 @@ Python client library for interacting with the TimeAtlas API.
 
 ## Overview
 
-Time Atlas is a comprehensive platform for managing and analyzing historical geospatial data. This Python client provides a convenient interface for accessing TimeAtlas API endpoints and working with Research Data Entities (RDEs).
+The [Time Atlas](timeatlas.eu) is a comprehensive platform for managing and analyzing historical geospatial data. This Python client provides a convenient interface for accessing TimeAtlas API endpoints and working with Research Data Entities (RDEs).
 
 ## Installation
 
@@ -74,18 +74,11 @@ black timeatlas/
 
 ## Documentation
 
-For detailed documentation on the TimeAtlas API and data model, please refer to the official TimeAtlas documentation.
+Documentation is accessible through [epfl-timemachine.github.io/time-atlas-python](https://epfl-timemachine.github.io/time-atlas-python/)
 
-## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+### License
 
-## Contributing
+This program is provided as open source under the [GNU Affero General Public License](https://github.com/epfl-timemachine/time-atlas-python/blob/master/LICENSE) v3 or later.
 
-Contributions are welcome! Please feel free to submit a Pull Request.
 
-## Support
-
-For issues and questions:
-- GitHub Issues: https://github.com/epfl-timemachine/time-atlas-python/issues
-- Documentation: https://github.com/epfl-timemachine/time-atlas-python#readme

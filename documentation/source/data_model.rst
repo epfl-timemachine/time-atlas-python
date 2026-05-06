@@ -676,46 +676,6 @@ Historical Records can be created directly from pandas DataFrame rows:
 Metadata columns not used by core attributes are automatically extracted into the 
 ``metadata`` dictionary.
 
-Actualizing References
-----------------------
-
-When loading data, you often start with UUID strings that reference other entities. 
-You can replace these strings with actual object references:
-
-.. code-block:: python
-
-   from timeatlas import Observation, HistoricalRecord, Geometry
-
-   # Dictionary of all loaded entities by UUID
-   entity_dict = {
-       'hr-uuid': historical_record_obj,
-       'geom-1': geometry1_obj,
-       'geom-2': geometry2_obj,
-       'poi-uuid': poi_obj
-   }
-
-   # Observation initially has UUID strings
-   obs = Observation(
-       id='obs-uuid',
-       historical_record='hr-uuid',
-       geometry=Point(2.35, 48.85),
-       has_geometries=['geom-1', 'geom-2'],
-       part_of_point_of_interest='poi-uuid'
-   )
-
-   # Replace UUID references with actual objects
-   obs.actualize_references(entity_dict)
-
-   # Now obs.historical_record is an HR object
-   # obs.has_geometries contains Geometry objects
-   # obs.part_of_point_of_interest is a PoI object
-
-Similarly, Historical Records can actualize observation references:
-
-.. code-block:: python
-
-   hr.actualize_observations_references(entity_dict)
-
 Summary
 =======
 

@@ -58,14 +58,7 @@ Quick Start
 Requirements
 ------------
 
-* Python 3.10 or higher
+* Python 3.12 or higher
 * requests >= 2.31.0
 * pandas >= 2.0.0
 * shapely >= 2.0.0
-
-Indices and Tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
