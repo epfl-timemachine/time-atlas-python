@@ -1,10 +1,7 @@
 TimeAtlas Client
 ================
 
-.. automodule:: timeatlas.TimeAtlas
-   :members:
-   :undoc-members:
-   :show-inheritance:
+The TimeAtlas client provides a Python interface for interacting with the TimeAtlas API.
 
 Main Client Class
 -----------------

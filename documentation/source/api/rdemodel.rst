@@ -1,10 +1,8 @@
 RDE Model
 =========
 
-.. automodule:: timeatlas.RDEModel
-   :members:
-   :undoc-members:
-   :show-inheritance:
+This module contains all Research Data Entity classes and supporting types for working
+with TimeAtlas data.
 
 Type Aliases
 ------------

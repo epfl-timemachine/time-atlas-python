@@ -1,10 +1,7 @@
 Enumerations
 ============
 
-.. automodule:: timeatlas.TAEnums
-   :members:
-   :undoc-members:
-   :show-inheritance:
+This module contains enumeration types used throughout the TimeAtlas data model.
 
 Layer Type
 ----------
