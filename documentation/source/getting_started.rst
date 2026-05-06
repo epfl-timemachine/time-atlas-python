@@ -31,7 +31,7 @@ Prerequisites
 
 Time Atlas Python requires:
 
-* Python 3.10 or higher
+* Python 3.12 or higher
 * An active TimeAtlas API instance
 * API credentials (if required by your instance)
 
