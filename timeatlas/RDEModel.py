@@ -477,7 +477,7 @@ class HistoricalRecord(RDE, UUIDEntity):
         """
         self.has_observations = [entity_list[obs_ref] if isinstance(obs_ref, str) and obs_ref in entity_list else obs_ref for obs_ref in self.has_observations]
 
-    def to_dict(self, flatten_metadata:bool = True) -> dict:
+    def to_dict(self, flatten_metadata:bool = False) -> dict:
         """Convert to dictionary representation.
         
         Args:
