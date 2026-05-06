@@ -76,6 +76,9 @@ intersphinx_mapping = {
 html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
 
+# Copy .nojekyll to output for GitHub Pages
+html_extra_path = ['.nojekyll']
+
 html_theme_options = {
     'navigation_depth': 4,
     'collapse_navigation': False,

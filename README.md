@@ -53,7 +53,7 @@ entity = client.get_single_rde_object('historical-records', 'uuid-here')
 
 ```bash
 # Clone the repository
-git clone https://github.com/viaccoz/time-atlas-python.git
+git clone https://github.com/epfl-timemachine/time-atlas-python.git
 cd time-atlas-python
 
 # Install in development mode with dev dependencies

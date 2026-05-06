@@ -22,7 +22,7 @@ You can also install from source:
 
 .. code-block:: bash
 
-   git clone https://github.com/viaccoz/time-atlas-python.git
+   git clone https://github.com/epfl-timemachine/time-atlas-python.git
    cd time-atlas-python
    pip install -e .
 
