@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import uuid
 from shapely.geometry import Point, LineString, Polygon, MultiLineString, MultiPolygon
 import shapely
 import json
@@ -38,7 +39,69 @@ type LayerReference = Layer | UUID
 type MapReference = Map | UUID
 """Reference to a Map entity, either as an object or UUID string."""
 
-@dataclass
+
+class UUIDManager():
+
+    """Utility class for managing UUID generation and parsing in the Time Atlas data model.
+    
+    Provides methods for generating deterministic UUIDs based on dataset namespaces
+    and parsing UUIDs from various formats (e.g., URLs). Ensures consistent handling
+    of unique identifiers across all RDE entities.
+    """
+
+    namespace: UUID
+
+    def __init__(self, namespace):
+        match namespace:
+            case str():
+                if namespace.startswith('http'):
+                    self.namespace = uuid.uuid5(uuid.NAMESPACE_URL, namespace)
+                else:
+                    raise ValueError(f"Invalid namespace string: {namespace}. Must be a URL starting with 'http'.")
+            case uuid.UUID():
+                self.namespace = namespace
+            case _:
+                raise ValueError(f"Invalid namespace type: {type(namespace)}. Must be a string URL or a uuid.UUID object.")
+
+    @staticmethod
+    def generate_uuid(namespace: Optional[uuid.UUID | str], value: Optional[str] = None) -> UUID:
+        if namespace:
+            manager = UUIDManager(namespace)
+            return manager._generate_uuid(value)
+        else:
+            return str(uuid.uuid4())
+
+    @staticmethod
+    def is_valid_uuid(uuid_string: str) -> bool:
+        '''
+        Checks whether the string given as argument is a valid UUID format.
+        Returns True if the string is a valid UUID (e.g., "80d80427-b711-5324-b1d1-4eeddb059269"), False otherwise.
+        '''
+        try:
+            uuid.UUID(uuid_string)
+            return True
+        except (ValueError, AttributeError, TypeError):
+            return False
+        
+
+    def _generate_uuid(self, value: Optional[str] = None) -> UUID:
+        """Generate a deterministic UUID based on the namespace and value.
+        
+        Uses UUIDv5 algorithm to create a unique identifier that is consistent
+        across different runs given the same namespace and value.
+        
+        Args:
+            value: Optional string value to generate the UUID from (e.g., a specific identifier from the data) 
+
+        Returns:
+            A UUID string generated from the namespace and value
+        """        
+        
+        if value is None:
+            value = str(uuid.uuid4())  # fallback to random UUID if no value provided
+        return str(uuid.uuid5(self.namespace, value))
+
+
 class UUIDEntity:
     """Base class for entities that have a unique identifier.
     
@@ -47,9 +110,27 @@ class UUIDEntity:
     deterministic identifier from the data.
     
     Attributes:
-        id: Universal unique identifier of the resource
+        id: Universal unique identifier of the resource when provided to the constructor, it can be either a valid UUID string, a uuid.UUID object, or a tuple of (UUIDManager, value) to generate a deterministic UUID based on the manager's namespace and the provided value. If no ID is provided, a random UUID will be generated.
     """
     id: UUID
+
+
+    def __init__(self, id: Optional[UUID | str | tuple[UUIDManager, str]] = None):
+        match id:
+            case str():
+                if UUIDManager.is_valid_uuid(id):
+                    self.id = id
+            case uuid.UUID():
+                self.id = str(id)
+            case (UUIDManager(), str() as value):
+                # this ensure that there is no collision of UUIDs across different RDE types, as the value is prefixed by the class name of the entity, and the namespace is the same for all entities of a dataset, so there will be no collision between different datasets either, as they have different namespaces.
+                current_class_name = self.__class__.__name__.lower()
+                value = f"{current_class_name}_{value}"
+                self.id = id[0]._generate_uuid(value)
+            case None:
+                self.id = UUIDManager.generate_uuid(None)  # generate random UUID if no ID provided
+            case _:
+                raise ValueError(f"Invalid ID type: {type(id)}. Must be a valid UUID string, a uuid.UUID object, or None.")             
 
     def get_ref(self) -> str:
         """Return the UUID reference of this entity.
