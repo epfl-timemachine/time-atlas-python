@@ -101,7 +101,7 @@ class UUIDManager():
             value = str(uuid.uuid4())  # fallback to random UUID if no value provided
         return str(uuid.uuid5(self.namespace, value))
 
-
+@dataclass
 class UUIDEntity:
     """Base class for entities that have a unique identifier.
     
@@ -112,26 +112,26 @@ class UUIDEntity:
     Attributes:
         id: Universal unique identifier of the resource when provided to the constructor, it can be either a valid UUID string, a uuid.UUID object, or a tuple of (UUIDManager, value) to generate a deterministic UUID based on the manager's namespace and the provided value. If no ID is provided, a random UUID will be generated.
     """
-    id: UUID
+    id: Optional[UUID | str | tuple[UUIDManager, str]]
 
 
-    def __init__(self, id: Optional[UUID | str | tuple[UUIDManager, str]] = None):
-        match id:
+    def __post_init__(self):
+        match self.id:
             case str():
-                if UUIDManager.is_valid_uuid(id):
-                    self.id = id
+                if not UUIDManager.is_valid_uuid(self.id):
+                    raise ValueError(f"Invalid UUID string: \"{self.id}\". Must be a valid UUID format (e.g., \"80d80427-b711-5324-b1d1-4eeddb059269\").")
             case uuid.UUID():
-                self.id = str(id)
+                self.id = str(self.id)
             case (UUIDManager(), str() as value):
                 # this ensure that there is no collision of UUIDs across different RDE types, as the value is prefixed by the class name of the entity, and the namespace is the same for all entities of a dataset, so there will be no collision between different datasets either, as they have different namespaces.
                 current_class_name = self.__class__.__name__.lower()
                 value = f"{current_class_name}_{value}"
-                self.id = id[0]._generate_uuid(value)
+                self.id = self.id[0]._generate_uuid(value)
             case None:
                 self.id = UUIDManager.generate_uuid(None)  # generate random UUID if no ID provided
             case _:
-                raise ValueError(f"Invalid ID type: {type(id)}. Must be a valid UUID string, a uuid.UUID object, or None.")             
-
+                raise ValueError(f"Invalid ID type: {type(self.id)}. Must be a valid UUID string, a uuid.UUID object, or None.")      
+                   
     def get_ref(self) -> str:
         """Return the UUID reference of this entity.
         
