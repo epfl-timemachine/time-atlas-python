@@ -112,9 +112,9 @@ class UUIDEntity:
     Attributes:
         id: Universal unique identifier of the resource when provided to the constructor, it can be either a valid UUID string, a uuid.UUID object, or a tuple of (UUIDManager, value) to generate a deterministic UUID based on the manager's namespace and the provided value. If no ID is provided, a random UUID will be generated.
     """
-    id: Optional[UUID | str | tuple[UUIDManager, str]]
+    id: Optional[UUID | str | tuple[UUIDManager, str]] # this is the init type, but after post-init, it will always be a string UUID.
 
-
+    # for inheritance reason, this class needs to be a dataclass, and the post_init is effectively the constructor. 
     def __post_init__(self):
         match self.id:
             case str():
@@ -122,23 +122,15 @@ class UUIDEntity:
                     raise ValueError(f"Invalid UUID string: \"{self.id}\". Must be a valid UUID format (e.g., \"80d80427-b711-5324-b1d1-4eeddb059269\").")
             case uuid.UUID():
                 self.id = str(self.id)
-            case (UUIDManager(), str() as value):
+            case (UUIDManager() as manager, str() as value):
                 # this ensure that there is no collision of UUIDs across different RDE types, as the value is prefixed by the class name of the entity, and the namespace is the same for all entities of a dataset, so there will be no collision between different datasets either, as they have different namespaces.
                 current_class_name = self.__class__.__name__.lower()
                 value = f"{current_class_name}_{value}"
-                self.id = self.id[0]._generate_uuid(value)
+                self.id = manager._generate_uuid(value)
             case None:
                 self.id = UUIDManager.generate_uuid(None)  # generate random UUID if no ID provided
             case _:
-                raise ValueError(f"Invalid ID type: {type(self.id)}. Must be a valid UUID string, a uuid.UUID object, or None.")      
-                   
-    def get_ref(self) -> str:
-        """Return the UUID reference of this entity.
-        
-        Returns:
-            The UUID string of this entity
-        """
-        return self.id
+                raise ValueError(f"Invalid ID type: {type(self.id)}. Must be a valid UUID string, a uuid.UUID object, or None.")
 
     @classmethod
     def parse_uuid(cls, data_id: str) -> None:
@@ -992,7 +984,7 @@ class Geometry(RDE, UUIDEntity):
         Args:
             geojson_line: String containing a single GeoJSON object
             uuid: UUID to assign to this geometry
-            layer_uuid: UUID of the layer this geometry belongs to
+            part_of_layer: UUID of the layer this geometry belongs to
             
         Returns:
             Geometry instance
@@ -1000,7 +992,7 @@ class Geometry(RDE, UUIDEntity):
         json_obj = json.loads(geojson_line)
         return cls(
             id=UUIDEntity.parse_uuid(uuid),
-            has_layer=UUIDEntity.parse_uuid(layer_uuid),
+            part_of_layer=UUIDEntity.parse_uuid(layer_uuid),
             geometry=shapely.from_geojson(json.dumps(json_obj.get('geometry', {}))),
         )
     
