@@ -150,6 +150,17 @@ class UUIDEntity:
             return data_id.split('/')[-1]
         return data_id
 
+    def get_ref(self) -> str:
+        """Return the UUID string identifier of this entity.
+
+        Used when serializing references to this entity inside other RDE objects
+        so that only the UUID is stored rather than the full nested object.
+
+        Returns:
+            The UUID string of this entity.
+        """
+        return str(self.id)
+
 @dataclass
 class RDE:
     """Base class for all Research Data Entities (RDE) in the Time Atlas data model.

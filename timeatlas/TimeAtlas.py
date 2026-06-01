@@ -1,7 +1,11 @@
+import json
 import os
+import pickle
+import shapely
+from collections import Counter
+from datetime import datetime
 from .RDEModel import *
 import requests
-import pickle
 import pandas as pd
 
 RDE_TYPE_TO_STATIC_CLASS_DEF = {
@@ -169,3 +173,342 @@ class TimeAtlas:
             hr_dict['obj'] = hr
             hr_dicts.append(hr_dict)
         return pd.DataFrame(hr_dicts)
+
+
+class _ShapelyEncoder(json.JSONEncoder):
+    """JSON encoder that transparently serializes Shapely geometry objects to GeoJSON dicts."""
+
+    def default(self, obj):
+        if isinstance(obj, shapely.geometry.base.BaseGeometry):
+            return json.loads(shapely.to_geojson(obj))
+        return super().default(obj)
+
+
+class RDECollection:
+    """A collection of Research Data Entities (RDE) ready for file-based serialization.
+
+    Acts as the interface between in-memory RDE model objects and the serialization
+    layer expected by the Time Atlas ingestion pipeline.  Entities are grouped by
+    their concrete class and written to individual JSON files, each wrapped in the
+    standard RDE envelope format used throughout the project::
+
+        {
+            "name": "<filename stem>",
+            "type_in_file": ["<rde_type string>"],
+            "creation_time": "<ISO-8601 timestamp>",
+            "rde_objects": [ ... ]
+        }
+
+    Attributes:
+        rdes: Flat list of all RDE instances held in this collection.
+    """
+
+    _FILE_MAP: dict[type, tuple[str, str]] = {
+        HistoricalRecord: ('historical_records', RDEType.HR.value),
+        Observation:      ('observations',       RDEType.OBS.value),
+        PointOfInterest:  ('points_of_interest', RDEType.POI.value),
+        Geometry:         ('geometries',         RDEType.GEOM.value),
+        Dataset:          ('dataset',            RDEType.DATASET.value),
+        Map:              ('maps',               RDEType.MAP.value),
+        Layer:            ('layers',             RDEType.LAYER.value),
+        Area:             ('areas',              RDEType.AREA.value),
+    }
+    """Mapping from RDE concrete class to (output filename stem, rde_type label)."""
+
+    def __init__(self, rdes: list[RDE]):
+        """Create an RDECollection.
+
+        Args:
+            rdes: List of RDE instances to include in this collection.
+        """
+        self.rdes = rdes
+        self._valid_data: bool = False
+
+    def add(self, rdes: list[RDE] | RDE) -> None:
+        """Append one or more RDE instances to the collection.
+
+        Args:
+            rdes: A single RDE instance or a list of RDE instances to add.
+        """
+        if isinstance(rdes, list):
+            self.rdes.extend(rdes)
+        else:
+            self.rdes.append(rdes)
+
+    def save_rde_to_files(self, output_dir: str, overwrite: bool = False, rde_types: list[type] | None = None) -> None:
+        """Serialize the collection's RDE entities to individual JSON files grouped by type.
+
+        For each RDE class present in the collection, one ``.json`` file is written
+        to *output_dir*.  The file name matches the keys in :attr:`_FILE_MAP`
+        (e.g. ``historical_records.json``, ``observations.json``).
+
+        Serialization relies on each entity's own ``to_dict()`` method.  Shapely
+        geometry objects that appear in the resulting dicts (e.g. from
+        :class:`~timeatlas.RDEModel.Observation` or
+        :class:`~timeatlas.RDEModel.PointOfInterest`) are automatically converted
+        to GeoJSON-compatible dicts during the JSON encoding step, so no manual
+        geometry handling is required before calling this method.
+
+        If a file already exists and *overwrite* is ``False``, the serialized
+        ``rde_objects`` list is compared with the file's current content; the
+        file is only rewritten when the content has actually changed.  This
+        avoids spurious modification timestamps that would trigger unnecessary
+        downstream reprocessing.
+
+        Args:
+            output_dir: Path to the directory where output files are written.
+                        The directory (and any missing parents) is created
+                        automatically if it does not yet exist.
+            overwrite:  When ``True``, rewrite every output file unconditionally,
+                        even if the content is unchanged.  Defaults to ``False``.
+            rde_types:  Optional list of RDE classes to serialize (e.g.
+                        ``[HistoricalRecord, Observation]``).  When ``None``
+                        (the default), all types present in the collection are
+                        written.
+
+        Raises:
+            OSError: If *output_dir* cannot be created or a file cannot be written.
+        """
+        os.makedirs(output_dir, exist_ok=True)
+
+        allowed: set[type] = set(rde_types) if rde_types is not None else set(self._FILE_MAP.keys())
+
+        # Group RDEs by concrete class, skipping unknown types and those not in the filter
+        groups: dict[type, list[RDE]] = {}
+        for rde in self.rdes:
+            cls = type(rde)
+            if cls in self._FILE_MAP and cls in allowed:
+                groups.setdefault(cls, []).append(rde)
+
+        for cls, rde_group in groups.items():
+            filename, type_label = self._FILE_MAP[cls]
+            filepath = os.path.join(output_dir, f'{filename}.json')
+
+            # Produce fully-decoded dicts (Shapely geometries → GeoJSON) so the
+            # result is directly comparable to what was previously saved on disk.
+            serialized: list[dict] = json.loads(
+                json.dumps([rde.to_dict() for rde in rde_group], cls=_ShapelyEncoder, ensure_ascii=False)
+            )
+
+            if not overwrite and os.path.exists(filepath):
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    existing = json.load(f)
+                if existing.get('rde_objects') == serialized:
+                    continue
+
+            envelope = {
+                'name': filename,
+                'type_in_file': [type_label],
+                'creation_time': datetime.now().isoformat(),
+                'rde_objects': serialized,
+            }
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(envelope, f, indent=1, ensure_ascii=False)
+
+    @classmethod
+    def read_rde_from_files(cls, input_dir: str) -> 'RDECollection':
+        """Deserialize RDE entities from JSON files produced by :meth:`save_rde_to_files`.
+
+        Scans *input_dir* for ``.json`` files, reads each envelope, and reconstructs
+        the appropriate RDE class instances using the ``rde_type`` label stored in
+        the ``type_in_file`` envelope field.  The class is resolved once per file
+        via :data:`RDE_TYPE_TO_STATIC_CLASS_DEF`, then each object in ``rde_objects``
+        is passed to the matching class's ``constructor_from_json_obj`` classmethod.
+
+        Files whose ``type_in_file`` value is absent or unrecognised are silently
+        skipped, so partially-populated directories are handled gracefully.
+
+        Args:
+            input_dir: Path to the directory containing the serialized ``.json`` files.
+
+        Returns:
+            A new :class:`RDECollection` populated with all successfully deserialized
+            RDE instances.
+
+        Raises:
+            FileNotFoundError: If *input_dir* does not exist.
+            json.JSONDecodeError: If a file contains malformed JSON.
+        """
+        rdes: list[RDE] = []
+        for entry in os.scandir(input_dir):
+            if not (entry.is_file() and entry.name.endswith('.json')):
+                continue
+            with open(entry.path, 'r', encoding='utf-8') as f:
+                envelope = json.load(f)
+            for obj in envelope.get('rde_objects', []):
+                rde_type = obj.get('rde_type')
+                if rde_type is None and 'properties' in obj:
+                    # GeoJSON Feature objects (e.g. Geometry) nest rde_type under properties
+                    rde_type = obj['properties'].get('rde_type')
+                rde_class = RDE_TYPE_TO_STATIC_CLASS_DEF.get(rde_type)
+                if rde_class is None:
+                    continue
+                rdes.append(rde_class.constructor_from_json_obj(obj))
+        return cls(rdes)
+
+    def validate_data(self) -> bool:
+        """Validate the internal consistency of all RDE entities in the collection.
+
+        Performs three categories of checks:
+
+        1. **Global UUID uniqueness** — every entity in the collection must have a
+           distinct UUID.
+        2. **Array-field UUID uniqueness** — within each entity, array fields that
+           hold references to other RDEs must not contain duplicate UUIDs.  The
+           affected fields are:
+
+           * :attr:`~timeatlas.RDEModel.HistoricalRecord.has_observations`
+           * :attr:`~timeatlas.RDEModel.Observation.has_geometries`
+           * :attr:`~timeatlas.RDEModel.Map.layers`
+
+        3. **No stale references** — whenever an entity references another entity
+           by UUID, that target entity must also be present in the collection.
+           The following reference fields are checked:
+
+           * ``HistoricalRecord.dataset`` → :class:`~timeatlas.RDEModel.Dataset`
+           * ``HistoricalRecord.has_observations`` → :class:`~timeatlas.RDEModel.Observation`
+           * ``Observation.historical_record`` → :class:`~timeatlas.RDEModel.HistoricalRecord`
+           * ``Observation.part_of_point_of_interest`` → :class:`~timeatlas.RDEModel.PointOfInterest`
+           * ``Observation.has_geometries`` → :class:`~timeatlas.RDEModel.Geometry`
+           * ``Layer.map`` → :class:`~timeatlas.RDEModel.Map`
+           * ``Map.layers`` → :class:`~timeatlas.RDEModel.Layer`
+
+           The following fields are intentionally **exempt** from stale-reference
+           checking because they routinely point to entities outside the collection:
+
+           * ``Geometry.part_of_layer``
+           * ``Dataset.has_areas``
+           * ``Map.areas``
+
+        Sets :attr:`_valid_data` to ``True`` when all checks pass.  Any failure
+        raises a :exc:`ValueError` listing every detected problem.
+
+        Returns:
+            ``True`` when the collection passes all checks.
+
+        Raises:
+            ValueError: If one or more validation checks fail.  The exception
+                message lists every individual problem found.
+        """
+        self._valid_data = False
+        errors: list[str] = []
+
+        def resolve_ref(ref) -> str | None:
+            """Return the UUID string from any RDE reference form.
+
+            Handles resolved RDE objects (via ``get_ref()``), raw UUID strings,
+            and unresolved flags (``None``, ``bool``) — returning ``None`` for
+            the latter so callers can skip them with a simple truthiness check.
+            """
+            match ref:
+                case UUIDEntity():
+                    return ref.get_ref()
+                case str():
+                    return ref
+                case _:
+                    return None
+
+        # Build a UUID → RDE index once for efficient stale-reference lookups.
+        uuid_index: dict[str, RDE] = {rde.id: rde for rde in self.rdes}
+
+        # ------------------------------------------------------------------
+        # 1. Global UUID uniqueness across the whole collection
+        # ------------------------------------------------------------------
+        all_ids = [rde.id for rde in self.rdes]
+        duplicate_ids = {uid for uid, count in Counter(all_ids).items() if count > 1}
+        if duplicate_ids:
+            errors.append(f'Duplicate UUIDs found in collection: {duplicate_ids}')
+
+        # ------------------------------------------------------------------
+        # 2. UUID uniqueness within per-RDE array fields
+        # ------------------------------------------------------------------
+        for rde in self.rdes:
+            match rde:
+                case HistoricalRecord():
+                    refs = [resolve_ref(r) for r in rde.has_observations]
+                    dups = {r for r, c in Counter(refs).items() if c > 1}
+                    if dups:
+                        errors.append(
+                            f'HistoricalRecord {rde.id}: duplicate UUIDs in has_observations: {dups}'
+                        )
+                case Observation():
+                    refs = [resolve_ref(r) for r in rde.has_geometries]
+                    dups = {r for r, c in Counter(refs).items() if c > 1}
+                    if dups:
+                        errors.append(
+                            f'Observation {rde.id}: duplicate UUIDs in has_geometries: {dups}'
+                        )
+                case Map():
+                    refs = [resolve_ref(r) for r in rde.layers]
+                    dups = {r for r, c in Counter(refs).items() if c > 1}
+                    if dups:
+                        errors.append(
+                            f'Map {rde.id}: duplicate UUIDs in layers: {dups}'
+                        )
+
+        # ------------------------------------------------------------------
+        # 3. Stale-reference checks
+        # ------------------------------------------------------------------
+        for rde in self.rdes:
+            match rde:
+                case HistoricalRecord():
+                    ds_id = resolve_ref(rde.dataset)
+                    if ds_id and ds_id not in uuid_index:
+                        errors.append(
+                            f'HistoricalRecord {rde.id}: references missing Dataset {ds_id}'
+                        )
+                    for ref in rde.has_observations:
+                        obs_id = resolve_ref(ref)
+                        if obs_id and obs_id not in uuid_index:
+                            errors.append(
+                                f'HistoricalRecord {rde.id}: references missing Observation {obs_id}'
+                            )
+
+                case Observation():
+                    hr_id = resolve_ref(rde.historical_record)
+                    if hr_id and hr_id not in uuid_index:
+                        errors.append(
+                            f'Observation {rde.id}: references missing HistoricalRecord {hr_id}'
+                        )
+                    # part_of_point_of_interest may be bool (unresolved flag) — resolve_ref returns None for it
+                    poi_id = resolve_ref(rde.part_of_point_of_interest)
+                    if poi_id and poi_id not in uuid_index:
+                        errors.append(
+                            f'Observation {rde.id}: references missing PointOfInterest {poi_id}'
+                        )
+                    for ref in rde.has_geometries:
+                        geom_id = resolve_ref(ref)
+                        if geom_id and geom_id not in uuid_index:
+                            errors.append(
+                                f'Observation {rde.id}: references missing Geometry {geom_id}'
+                            )
+
+                case Layer():
+                    map_id = resolve_ref(rde.map)
+                    if map_id and map_id not in uuid_index:
+                        errors.append(
+                            f'Layer {rde.id}: references missing Map {map_id}'
+                        )
+
+                case Map():
+                    for ref in rde.layers:
+                        layer_id = resolve_ref(ref)
+                        if layer_id and layer_id not in uuid_index:
+                            errors.append(
+                                f'Map {rde.id}: references missing Layer {layer_id}'
+                            )
+                    # Map.areas → exempt from stale-reference check
+
+                case _:
+                    pass
+                    # Dataset.has_areas → exempt from stale-reference check
+                    # Geometry.part_of_layer → exempt from stale-reference check
+
+        if errors:
+            raise ValueError(
+                f'RDECollection validation failed with {len(errors)} error(s):\n'
+                + '\n'.join(f'  - {e}' for e in errors)
+            )
+
+        self._valid_data = True
+        return True
