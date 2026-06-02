@@ -3,7 +3,7 @@ import json
 import os
 from datetime import datetime
 import numpy as np
-from os import Path
+from pathlib import Path
 from .TAEnums import MetadataType
 
 
