@@ -112,7 +112,7 @@ class TimeAtlas:
                 match obs_ref:
                     case str():
                         obs_uuids.add(obs_ref)
-                    case Obs():
+                    case Observation():
                         obs_uuids.add(obs_ref.uuid)
         obs_list = []
         # for obs_uuid in tqdm(obs_uuids, desc='Fetching observations'):

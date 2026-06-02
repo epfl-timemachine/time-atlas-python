@@ -1,12 +1,16 @@
 from dataclasses import dataclass, field
+import os
 import uuid
 from shapely.geometry import Point, LineString, Polygon, MultiLineString, MultiPolygon
 import shapely
 import json
 from typing import Optional, Self
 from datetime import datetime
+import numpy as np
 import pandas as pd
+
 from .TAEnums import *
+from .helpers import *
 
 # Type aliases for improved code readability and type hints
 type GeometryType = Point | LineString | Polygon | MultiLineString | MultiPolygon
@@ -473,7 +477,114 @@ class Dataset(RDE, UUIDEntity):
             sources=json_obj.get('sources', []),
             has_areas=json_obj.get('has_areas', [])
         )
-    
+
+    @classmethod
+    def constructor_from_dataconfiguration_file_and_dataframe(cls, 
+                                                              conf_file: str, 
+                                                              df: pd.DataFrame,
+                                                              sources: list[str] = [],
+                                                              ds_id: Optional[str] = None,
+                                                              ) -> Self:
+        """Build a Dataset object from a configuration file and a DataFrame.
+        """
+        with open(conf_file, 'r') as f:
+            conf_content = json.load(f)
+
+        conf = conf_content['DATASET_CONFIGURATION']
+        
+        # in case the dataset uid was not generated as expected.
+        if not ds_id or not UUIDManager.is_valid_uuid(ds_id):
+            uuid_mgr = UUIDManager(conf_content['UUID_NAMESPACE'])
+            DS_SLUG = conf_content['DATASET_CONFIGURATION']['slug']
+            ds_id = uuid_mgr._generate_uuid(DS_SLUG)
+
+        indexable      = conf['indexed']
+        short_display  = conf['short_display']
+        hidden         = conf['hidden']
+        auto_fields    = conf['automatic_fields']
+        semi_auto      = conf['semi_automatic_fields']
+        manual_fields  = conf['manual_fields']
+        ai_fields      = conf['ai_fields']
+        tagged_fields  = conf['tagged_fields']
+        labels         = conf['labels']
+
+
+        labels_order = list(conf['labels'].keys())   # preserves column order as in old script
+        df = df[[cols for cols in labels_order if cols in df.columns]]  # reorder columns to match the order in the config file, and ignore columns that are not in the config file, as they will be ignored in the metadata configuration generation anyway
+
+        md_configs: list[MetadataFieldConfig] = []
+        for col in df.columns:
+            vals = df[col]
+            py_type = _get_likely_type(vals)
+            type_key = (
+                py_type.__name__ if isinstance(py_type, type) else str(py_type)
+            ).upper()
+            field_type = METADATA_TYPE_TO_ENUM.get(type_key) or _python_type_to_metadata_type(py_type)
+
+            display_label = (
+                MultiLingualValue(values=labels[col])
+                if col in labels
+                else MultiLingualValue(values={'en': [
+                    ' '.join(w[0].upper() + w[1:] for w in col.replace('_', ' ').replace('-', '').split())
+                ]})
+            )
+
+            mfc = MetadataFieldConfig(
+                id=col,
+                type=field_type,
+                display_label=display_label,
+                nullable=bool(pd.isna(vals).any()),
+            )
+
+            if col in indexable:     mfc.indexable     = True
+            if col in hidden:        mfc.hidden        = True
+            if col in short_display: mfc.short_display = True
+            if col in tagged_fields: mfc.tag           = METADATA_TAG_TO_ENUM.get(tagged_fields[col])
+
+            if   col in auto_fields:   mfc.paradata = ParadataValues.AUTOMATIC
+            elif col in semi_auto:     mfc.paradata = ParadataValues.SEMIAUTOMATIC
+            elif col in manual_fields: mfc.paradata = ParadataValues.MANUAL
+            elif col in ai_fields:     mfc.paradata = ParadataValues.AI
+
+            md_configs.append(mfc)
+
+        ds_config = DatasetConfiguration(
+            metadata_field_config=md_configs,
+            main_label=conf['main_label'],
+            sub_label=conf['sub_label'],
+            display_thumbnail=conf.get('display_thumbnail', False),
+            external_source=conf.get('external_source', False),
+        )
+
+        ds_metadata = [
+            FreeFormMetadata(
+                type=METADATA_TYPE_TO_ENUM[v['type']],
+                label=MultiLingualValue(values=v['display_label']),
+                value=MultiLingualValue(values=v['value']),
+            )
+            for v in conf['dataset_metadata_config'].values()
+        ]
+
+        area_uuids = _get_area_uuids(conf_content['AREA_LOCS'])
+
+        ds = cls(
+            id=ds_id,
+            slug=conf['slug'],
+            version='1.0',
+            name=MultiLingualValue(values=conf['name']),
+            sources=sources,
+            time_range=RDETimeRange(
+                start_time=_datetime_from_int(conf_content['TIMERANGE_MINIMUM']),
+                end_time=_datetime_from_int(conf_content['TIMERANGE_MAXIMUM'], match_to_end=True),
+            ),
+            configuration=ds_config,
+            metadata=ds_metadata,
+            has_areas=area_uuids,
+            creation_time=datetime.now().isoformat(),
+        )
+
+        return ds
+
     # override to exclude specific fields 
     def to_dict(self, exclude_fields = {'hrs', 'obs'}) -> dict:
         """Convert to dictionary representation.
