@@ -390,7 +390,6 @@ class RDECollection:
             ValueError: If one or more validation checks fail.  The exception
                 message lists every individual problem found.
         """
-        self._valid_data = False
         errors: list[str] = []
 
         def resolve_ref(ref) -> str | None:
@@ -510,5 +509,4 @@ class RDECollection:
                 + '\n'.join(f'  - {e}' for e in errors)
             )
 
-        self._valid_data = True
         return True

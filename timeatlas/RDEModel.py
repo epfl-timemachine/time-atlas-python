@@ -191,17 +191,17 @@ class RDE:
             if field_name in exclude_fields:
                 continue
             match field_value:
+                case HeightInfo():
+                    result['terrain_height'] = field_value.terrain
+                    result['building_height'] = field_value.building
+                case RDETimeRange():
+                    result['start_time'] = field_value.start_time
+                    result['end_time'] = field_value.end_time
                 case UUIDEntity():
                     result[field_name] = field_value.get_ref()
                 case RDE():
                     # works for dataset configuration as well, as it inherits from RDE, but does not have rde_type field, so it will not be added in the final dict
                     result[field_name] = field_value.to_dict()
-                case RDETimeRange():
-                    result['start_time'] = field_value.start_time
-                    result['end_time'] = field_value.end_time
-                case HeightInfo():
-                    result['terrain_height'] = field_value.terrain
-                    result['building_height'] = field_value.building
                 case list():
                     result[field_name] = [item.get_ref() if isinstance(item, RDE) else item for item in field_value]
                 case Enum():
