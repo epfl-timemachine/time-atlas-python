@@ -419,12 +419,13 @@ class Document(UUIDEntity):
     items: list[Page | Model]
     structures: Optional[dict] = None
 
-    def to_iiif(self, uuid_manager: UUIDManager, label: dict[str, list[str]], presentation_version:str = '3') -> dict:
+    def to_iiif(self, uuid_manager: UUIDManager, label: dict[str, list[str]], url_prefix: str, presentation_version:str = '3') -> dict:
         """Convert document to IIIF Presentation API Manifest format.
         
         Args:
             uuid_manager: Manager for generating unique identifiers.
             label: Multi-language label dictionary.
+            url_prefix: Base URL prefix for the IIIF image service.
             presentation_version: IIIF Presentation API version ('3' or '4').
             
         Returns:
@@ -437,22 +438,23 @@ class Document(UUIDEntity):
             "type": "Manifest",
             "label": label,
             "thumbnail": [{
-                "id": f"{url_encoded_iiif_image_url(first_page.path)}/full/300,/0/default.jpg",
+                "id": f"{url_encoded_iiif_image_url(url_prefix, first_page.object_ref)}/full/300,/0/default.jpg",
                 "type": "Image"
             }
         ],
-            "items": [p.to_iiif(uuid_manager) for p in self.items]
+            "items": [p.to_iiif(uuid_manager, url_prefix) if isinstance(p, Page) else p.to_iiif(uuid_manager) for p in self.items]
         }
         if self.structures:
             man['structures'] = [self.structures]
         return man
     
-    def to_iiif_manifest_item(self, with_thumbnail: bool = True) -> dict:
+    def to_iiif_manifest_item(self, url_prefix: str, with_thumbnail: bool = True) -> dict:
         """Convert document to a simplified IIIF Manifest reference.
         
         Useful for including in Collection items arrays.
         
         Args:
+            url_prefix: Base URL prefix for the IIIF image service.
             with_thumbnail: Whether to include thumbnail information.
             
         Returns:
@@ -464,7 +466,7 @@ class Document(UUIDEntity):
             "type": "Manifest",
             "label": self.label,
             "thumbnail": [{
-                "id": f"{url_encoded_iiif_image_url(first_page.path)}/full/300,/0/default.jpg",
+                "id": f"{url_encoded_iiif_image_url(url_prefix, first_page.object_ref)}/full/300,/0/default.jpg",
                 "type": "Image"
             }] if with_thumbnail else [],
         }
@@ -484,11 +486,12 @@ class Collection(UUIDEntity):
     label: MultiLingualValue
     items: list[Document | 'Collection']
 
-    def to_iiif(self, uuid:str, with_thumbnails:bool=True, presentation_version:str = '3') -> dict:
+    def to_iiif(self, uuid:str, url_prefix: str, with_thumbnails:bool=True, presentation_version:str = '3') -> dict:
         """Convert collection to IIIF Presentation API Collection format.
         
         Args:
             uuid: Unique identifier for the collection.
+            url_prefix: Base URL prefix for the IIIF image service.
             with_thumbnails: Whether to include thumbnails for items.
             
         Returns:
@@ -499,7 +502,7 @@ class Collection(UUIDEntity):
             "id": uuid,
             "type": "Collection",
             "label": self.label,
-            "items": [item.to_iiif_manifest_item(uuid, with_thumbnails) for item in self.items] ,
+            "items": [item.to_iiif_manifest_item(url_prefix, with_thumbnails) for item in self.items] ,
             "total": len(self.items),
             "metadata": [],
         }
