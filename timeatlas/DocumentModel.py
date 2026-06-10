@@ -90,6 +90,15 @@ def url_encoded_iiif_image_url(prefix_url: str, path:str) -> str:
     """
     return f"{prefix_url}/{quote_plus(path)}"
 
+
+class FileReference(UUIDEntity):
+    """Reference to a file resource with a unique identifier.
+    
+    Attributes:
+        path_name: Path to the referenced file.
+    """
+    path_name: str
+
 class SelectorType(Enum):
     """Enumeration of Web Annotation selector types for targeting regions.
     
@@ -102,13 +111,6 @@ class SelectorType(Enum):
     SVG = 'SvgSelector'
     XYWH = 'SquareSelector'
 
-class FileReference(UUIDEntity):
-    """Reference to a file resource with a unique identifier.
-    
-    Attributes:
-        path_name: Path to the referenced file.
-    """
-    path_name: str
 
 class Selector():
     """Web Annotation selector for targeting specific regions in a resource.
@@ -245,7 +247,7 @@ class Annotation(UUIDEntity):
                 }
             )
         return {
-            "id": uuid_manager.generate_uuid(f'{canvas_id}/annotation/{self.id}/1'),
+            "id": uuid_manager._generate_uuid(f'{canvas_id}/annotation/{self.id}/1'),
             "type": "Annotation",
             "motivation": "commenting",
             "body": annotation_array,
@@ -309,11 +311,11 @@ class Page(UUIDEntity):
             "width": self.width,
             "items": [
                 {
-                    "id": uuid_manager.generate_uuid(page_id+'/1'), 
+                    "id": uuid_manager._generate_uuid(page_id+'/1'), 
                     "type": "AnnotationPage",
                     "items": [
                         {
-                        "id": uuid_manager.generate_uuid(annot_page_idx),
+                        "id": uuid_manager._generate_uuid(annot_page_idx),
                         "type": "Annotation",
                         "motivation": "painting",
                         "body": {
@@ -338,7 +340,7 @@ class Page(UUIDEntity):
         }
         if self.annotations:
             obj['annotations'] = {
-                "id": uuid_manager.generate_uuid(f'{page_id}/annotation/{self.id}'),
+                "id": uuid_manager._generate_uuid(f'{page_id}/annotation/{self.id}'),
                 "type": "AnnotationPage",
                 "items": [
                     annotation.to_iiif(uuid_manager, page_id) for annotation in self.annotations
@@ -382,11 +384,11 @@ class Model(UUIDEntity):
             "label": self.label,
             "items": [
                 {
-                    "id": uuid_manager.generate_uuid(f"{scene_id}/page/p1/1"),
+                    "id": uuid_manager._generate_uuid(f"{scene_id}/page/p1/1"),
                     "type": "AnnotationPage",
                     "items": [
                         {
-                            "id": uuid_manager.generate_uuid(f"{scene_id}/annotation/a1/1"),
+                            "id": uuid_manager._generate_uuid(f"{scene_id}/annotation/a1/1"),
                             "type": "Annotation",
                             "motivation": ["painting"],
                             "body": {
