@@ -532,7 +532,7 @@ class Document(UUIDEntity):
     items: list[Page | Model]
     structures: Optional[dict] = None
 
-    def to_iiif(self, uuid_manager: UUIDManager, label: dict[str, list[str]], url_prefix: str, presentation_version:str = '3') -> dict:
+    def to_iiif(self, uuid_manager: UUIDManager,  url_prefix: str, presentation_version:str = '3') -> dict:
         """Convert document to IIIF Presentation API Manifest format.
         
         Args:
@@ -549,7 +549,7 @@ class Document(UUIDEntity):
             "@context": f"http://iiif.io/api/presentation/{presentation_version}/context.json",
             "id": self.id,
             "type": "Manifest",
-            "label": label,
+            "label": self.label,
             "thumbnail": [{
                 "id": f"{url_encoded_iiif_image_url(url_prefix, first_page.object_ref)}/full/300,/0/default.jpg",
                 "type": "Image"
@@ -599,7 +599,7 @@ class Collection(UUIDEntity):
     label: MultiLingualValue
     items: list[Document | Collection]
 
-    def to_iiif(self, uuid:str, url_prefix: str, with_thumbnails:bool=True, presentation_version:str = '3') -> dict:
+    def to_iiif(self, url_prefix: str, with_thumbnails:bool=True, presentation_version:str = '3') -> dict:
         """Convert collection to IIIF Presentation API Collection format.
         
         Args:
@@ -612,7 +612,7 @@ class Collection(UUIDEntity):
         """
         return {
             "@context": f"http://iiif.io/api/presentation/{presentation_version}/context.json",
-            "id": uuid,
+            "id": self.id,
             "type": "Collection",
             "label": self.label.values,
             "items": [item.to_iiif_manifest_item(url_prefix, with_thumbnails) for item in self.items] ,
