@@ -1077,7 +1077,7 @@ class Geometry(RDE, UUIDEntity):
         if not self.geometry.is_valid:
             if not self.force_valid:
                 raise ValueError(f'Invalid geometry, because  {shapely.validation.explain_validity(self.geometry)}')
-            self.geometry = shapely.validation.make_valid(self.geometry)
+            self.geometry = shapely.make_valid(self.geometry)
 
     @classmethod
     def constructor_from_json_obj(cls, json_obj: dict) -> Self:
