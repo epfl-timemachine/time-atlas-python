@@ -5,6 +5,7 @@ from enum import Enum
 from urllib.parse import quote_plus
 from pandas.core.indexes.multi import MultiIndex
 import pandas as pd
+from PIL import Image
 
 def int_tuple_list_to_svg_string(tpl: list[tuple[int,int]]) -> str:
     """Convert a list of integer coordinate tuples to an SVG path string.
@@ -98,6 +99,117 @@ class FileReference(UUIDEntity):
         path_name: Path to the referenced file.
     """
     path_name: str
+
+    def get_image_metadata(self) -> dict:
+        """Extract image metadata using PIL.
+        
+        Returns:
+            Dictionary with 'width', 'height', and 'format' keys.
+            
+        Raises:
+            IOError: If the file cannot be opened or read.
+            ValueError: If the file is not a valid image.
+        """
+        with Image.open(self.path_name) as img:
+            # Get MIME type from PIL format
+            format_map = {
+                'JPEG': 'image/jpeg',
+                'PNG': 'image/png',
+                'GIF': 'image/gif',
+                'TIFF': 'image/tiff',
+                'BMP': 'image/bmp',
+                'WEBP': 'image/webp'
+            }
+            mime_type = format_map.get(img.format, f'image/{img.format.lower()}' if img.format else 'image/unknown')
+            
+            return {
+                'width': img.width,
+                'height': img.height,
+                'format': mime_type
+            }
+
+    def generate_page_from_file_reference(self, uuid_manager: UUIDManager, label: MultiLingualValue, range_idx: int) -> 'Page':
+        """Generate a Page object from the file reference.
+        
+        Extracts image metadata using PIL and creates a Page object.
+        
+        Args:
+            uuid_manager: Manager for generating unique identifiers.
+            label: Multi-language label for the page.
+            range_idx: Index position within a range or sequence.
+        
+        Returns:
+            Page object with the file reference as its object_ref.
+            
+        Raises:
+            IOError: If the image file cannot be opened.
+            ValueError: If the file is not a valid image.
+        """
+        metadata = self.get_image_metadata()
+        
+        return Page(
+            id=uuid_manager._generate_uuid(f'file_ref_page/{self.id}'),
+            label=label,
+            format=metadata['format'],
+            range_idx=range_idx,
+            height=metadata['height'],
+            width=metadata['width'],
+            object_ref=self
+        )
+
+    def get_model_metadata(self) -> dict:
+        """Extract 3D model metadata based on file extension.
+        
+        Returns:
+            Dictionary with 'format' key containing the MIME type.
+            
+        Note:
+            3D models don't have standardized metadata extraction like images,
+            so format is determined from file extension.
+        """
+        import os
+        extension = os.path.splitext(self.path_name)[1].lower()
+        
+        format_map = {
+            '.gltf': 'model/gltf+json',
+            '.glb': 'model/gltf-binary',
+            '.obj': 'model/obj',
+            '.stl': 'model/stl',
+            '.fbx': 'model/fbx',
+            '.dae': 'model/vnd.collada+xml',
+            '.ply': 'model/ply',
+            '.3ds': 'model/3ds',
+            '.usdz': 'model/vnd.usdz+zip',
+            '.las': 'application/vnd.las',
+            '.laz': 'application/vnd.las'
+        }
+        
+        mime_type = format_map.get(extension, f'model/{extension[1:]}' if extension else 'model/unknown')
+        
+        return mime_type
+
+    def generate_model_from_file_reference(self, uuid_manager: UUIDManager, label: MultiLingualValue) -> 'Model':
+        """Generate a Model object from the file reference.
+        
+        Extracts model format from file extension and creates a Model object.
+        
+        Args:
+            uuid_manager: Manager for generating unique identifiers.
+            label: Multi-language label for the model.
+        
+        Returns:
+            Model object with the file reference as its object_ref.
+        """
+        metadata = self.get_model_metadata()
+        
+        return Model(
+            id=uuid_manager._generate_uuid(f'file_ref_model/{self.id}'),
+            label=label,
+            format=self.get_model_metadata(),
+            object_ref=self
+        )
+    
+
 
 class SelectorType(Enum):
     """Enumeration of Web Annotation selector types for targeting regions.
@@ -306,7 +418,7 @@ class Page(UUIDEntity):
         obj = {
             "id": page_id,
             "type": "Canvas",
-            "label": self.label,
+            "label": self.label.values,
             "height": self.height,
             "width": self.width,
             "items": [
@@ -381,7 +493,7 @@ class Model(UUIDEntity):
         return {
             "id": scene_id,
             "type": "Scene",
-            "label": self.label,
+            "label": self.label.values,
             "items": [
                 {
                     "id": uuid_manager._generate_uuid(f"{scene_id}/page/p1/1"),
@@ -464,7 +576,7 @@ class Document(UUIDEntity):
         return {
             "id": self.id,
             "type": "Manifest",
-            "label": self.label,
+            "label": self.label.values,
             "thumbnail": [{
                 "id": f"{url_encoded_iiif_image_url(url_prefix, first_page.object_ref)}/full/300,/0/default.jpg",
                 "type": "Image"
@@ -501,7 +613,7 @@ class Collection(UUIDEntity):
             "@context": f"http://iiif.io/api/presentation/{presentation_version}/context.json",
             "id": uuid,
             "type": "Collection",
-            "label": self.label,
+            "label": self.label.values,
             "items": [item.to_iiif_manifest_item(url_prefix, with_thumbnails) for item in self.items] ,
             "total": len(self.items),
             "metadata": [],

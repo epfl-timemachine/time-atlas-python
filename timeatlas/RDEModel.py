@@ -1069,12 +1069,15 @@ class Geometry(RDE, UUIDEntity):
     """
     geometry: GeometryType
     part_of_layer: Optional[LayerReference] = None
+    force_valid: bool = False  # if True, will attempt to fix invalid geometries instead of raising an error
 
     def __post_init__(self):
         if isinstance(self.geometry, dict):
             self.geometry = shapely.from_geojson(json.dumps(self.geometry))
         if not self.geometry.is_valid:
-            raise ValueError(f'Invalid geometry, because  {shapely.validation.explain_validity(self.geometry)}')
+            if not self.force_valid:
+                raise ValueError(f'Invalid geometry, because  {shapely.validation.explain_validity(self.geometry)}')
+            self.geometry = shapely.validation.make_valid(self.geometry)
 
     @classmethod
     def constructor_from_json_obj(cls, json_obj: dict) -> Self:
