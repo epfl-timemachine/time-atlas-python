@@ -1,3 +1,4 @@
+from __future__ import annotations # for forward references in type hints, used in the Collection class for items attribute
 from .RDEModel import UUIDEntity, MultiLingualValue, UUIDManager
 from dataclasses import dataclass
 from typing import Optional, OrderedDict
@@ -596,7 +597,7 @@ class Collection(UUIDEntity):
         presentation_version: IIIF Presentation API version for the collection (default: '3').
     """
     label: MultiLingualValue
-    items: list[Document | 'Collection']
+    items: list[Document | Collection]
 
     def to_iiif(self, uuid:str, url_prefix: str, with_thumbnails:bool=True, presentation_version:str = '3') -> dict:
         """Convert collection to IIIF Presentation API Collection format.
