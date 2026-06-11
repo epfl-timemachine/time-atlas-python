@@ -549,7 +549,7 @@ class Document(UUIDEntity):
             "@context": f"http://iiif.io/api/presentation/{presentation_version}/context.json",
             "id": self.id,
             "type": "Manifest",
-            "label": self.label,
+            "label": self.label.values,
             "thumbnail": [{
                 "id": f"{url_encoded_iiif_image_url(url_prefix, first_page.object_ref)}/full/300,/0/default.jpg",
                 "type": "Image"
