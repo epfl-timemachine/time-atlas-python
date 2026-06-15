@@ -5,7 +5,7 @@ from datetime import datetime
 import numpy as np
 from pathlib import Path
 from .TAEnums import MetadataType
-
+import io 
 
 def _seed(row: pd.Series, cols: list[str], suffix: str = '') -> str:
     """Replicate the CSV-seed produced by legacy make_uuid_from_row_selection."""
