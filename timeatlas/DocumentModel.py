@@ -410,7 +410,7 @@ class Page(UUIDEntity):
             raise ValueError('Cannot generate IIIF manifest for a page with a file object reference, only string path is supported')
         
         url_encoded = url_encoded_iiif_image_url(url_prefix, self.object_ref)
-        page_id = getattr(self, 'id', None)
+        page_id = self.id
         if isinstance(page_id, tuple) or isinstance(page_id, list):
             # we're in the case were there is an external resource in the id.
             page_id = page_id[0]
@@ -474,6 +474,7 @@ class Model(UUIDEntity):
     label: MultiLingualValue
     format: str
     object_ref: str | FileReference
+    annotations: Optional[list[Annotation]] = None
 
     def to_iiif(self, uuid_manager: UUIDManager) -> dict:
         """Convert 3D model to IIIF Presentation API Scene format.
@@ -491,7 +492,7 @@ class Model(UUIDEntity):
             if isinstance(object_ref, FileReference):
                 raise ValueError('Cannot generate IIIF manifest for a model with a file object reference, only string path is supported')
         scene_id = self.id
-        return {
+        obj = {
             "id": scene_id,
             "type": "Scene",
             "label": self.label.values,
@@ -515,6 +516,15 @@ class Model(UUIDEntity):
                 }
             ]
         }
+        if self.annotations:
+            obj['annotations'] = {
+                "id": uuid_manager._generate_uuid(f'{scene_id}/annotation/{self.id}'),
+                "type": "AnnotationPage",
+                "items": [
+                    annotation.to_iiif(uuid_manager, scene_id) for annotation in self.annotations
+                ]
+            }
+        return obj
     
 @dataclass
 class Document(UUIDEntity):
