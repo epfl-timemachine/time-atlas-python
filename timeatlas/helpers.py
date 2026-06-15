@@ -7,6 +7,12 @@ from pathlib import Path
 from .TAEnums import MetadataType
 
 
+def _seed(row: pd.Series, cols: list[str], suffix: str = '') -> str:
+    """Replicate the CSV-seed produced by legacy make_uuid_from_row_selection."""
+    buf = io.StringIO()
+    row[cols].to_csv(buf, index=False, header=False)
+    return buf.getvalue() + suffix
+
 def _get_layer_uuid(layer_fp: str, slug_part: str) -> str:
     with open(layer_fp) as f:
         layers = json.load(f)['rde_objects']
