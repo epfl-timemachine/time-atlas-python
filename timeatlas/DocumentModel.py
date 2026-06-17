@@ -452,13 +452,13 @@ class Page(UUIDEntity):
             ]
         }
         if self.annotations:
-            obj['annotations'] = {
+            obj['annotations'] = [{
                 "id": uuid_manager._generate_uuid(f'{page_id}/annotation/{self.id}'),
                 "type": "AnnotationPage",
                 "items": [
                     annotation.to_iiif(uuid_manager, page_id) for annotation in self.annotations
                 ]
-            }
+            }]
         return obj
     
 
@@ -517,13 +517,13 @@ class Model(UUIDEntity):
             ]
         }
         if self.annotations:
-            obj['annotations'] = {
+            obj['annotations'] = [{
                 "id": uuid_manager._generate_uuid(f'{scene_id}/annotation/{self.id}'),
                 "type": "AnnotationPage",
                 "items": [
                     annotation.to_iiif(uuid_manager, scene_id) for annotation in self.annotations
                 ]
-            }
+            }]
         return obj
     
 @dataclass
