@@ -19,6 +19,30 @@ Metadata Tag
    :undoc-members:
    :show-inheritance:
 
+Metadata Type
+-------------
+
+.. autoclass:: timeatlas.TAEnums.MetadataType
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Paradata Values
+---------------
+
+.. autoclass:: timeatlas.TAEnums.ParadataValues
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+RDE Type
+--------
+
+.. autoclass:: timeatlas.TAEnums.RDEType
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Type Mappings
 -------------
 
@@ -29,4 +53,13 @@ and enum values:
    :annotation:
 
 .. autodata:: timeatlas.TAEnums.METADATA_TAG_TO_ENUM
+   :annotation:
+
+.. autodata:: timeatlas.TAEnums.METADATA_TYPE_TO_ENUM
+   :annotation:
+
+.. autodata:: timeatlas.TAEnums.PARADATA_VALUE_TO_ENUM
+   :annotation:
+
+.. autodata:: timeatlas.TAEnums.CLASS_NAME_TO_RDE
    :annotation:

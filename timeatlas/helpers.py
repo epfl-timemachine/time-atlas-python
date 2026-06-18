@@ -26,7 +26,8 @@ def _get_layer_uuid(layer_fp: str, slug_part: str) -> str:
 def _get_filepath_like(prefix: str, ext: str) -> str:
     name = prefix.split('/')[-1]
     path_prefix = prefix[: -len(name)] or '.'
-    return str(sorted(Path(path_prefix).rglob(f'{name}*.{ext}'))[-1])
+    matches = list(Path(path_prefix).rglob(f'{name}*.{ext}'))
+    return str(max(matches, key=lambda path: (path.name, str(path))))
 
 def _clean_metadata(raw: dict) -> dict:
     """Replace NaN/ndarray values as the legacy produce_hr_obj wrapper did."""

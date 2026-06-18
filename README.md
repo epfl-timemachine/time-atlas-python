@@ -1,10 +1,13 @@
 # Time Atlas Python Client
 
+[![Tests](https://github.com/epfl-timemachine/time-atlas-python/actions/workflows/tests.yml/badge.svg)](https://github.com/epfl-timemachine/time-atlas-python/actions/workflows/tests.yml)
+![Coverage threshold](https://img.shields.io/badge/coverage_threshold-95%25-brightgreen)
+
 Python client library for interacting with the TimeAtlas API.
 
 ## Overview
 
-The [Time Atlas](timeatlas.eu) is a comprehensive platform for managing and analyzing historical geospatial data. This Python client provides a convenient interface for accessing TimeAtlas API endpoints and working with Research Data Entities (RDEs).
+The [Time Atlas](https://timeatlas.eu) is a comprehensive platform for managing and analyzing historical geospatial data. This Python client provides a convenient interface for accessing TimeAtlas API endpoints and working with Research Data Entities (RDEs).
 
 ## Installation
 
@@ -63,8 +66,30 @@ pip install -e ".[dev]"
 ### Running tests
 
 ```bash
-pytest
+python -m pytest
 ```
+
+Run the complete suite with branch coverage:
+
+```bash
+python -m pytest \
+  --cov=timeatlas \
+  --cov-report=term-missing \
+  --cov-report=html \
+  --cov-report=xml
+```
+
+The project enforces a minimum total coverage of 95%. The HTML report is written to
+`htmlcov/index.html`, and the XML report is written to `coverage.xml`.
+
+Tests use deterministic fixtures, mocked HTTP responses, temporary files, and representative
+RDE samples from `test/data`; they do not require a running TimeAtlas API.
+
+### Continuous integration
+
+The [test workflow](https://github.com/epfl-timemachine/time-atlas-python/actions/workflows/tests.yml)
+runs the suite with coverage on Python 3.12 and 3.13 for every push and pull request. Coverage
+XML reports are uploaded as workflow artifacts for each supported Python version.
 
 ### Code formatting
 
@@ -80,5 +105,3 @@ Documentation is accessible through [epfl-timemachine.github.io/time-atlas-pytho
 ### License
 
 This program is provided as open source under the [GNU Affero General Public License](https://github.com/epfl-timemachine/time-atlas-python/blob/master/LICENSE) v3 or later.
-
-

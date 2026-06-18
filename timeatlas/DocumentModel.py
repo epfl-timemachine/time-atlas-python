@@ -1,7 +1,8 @@
 from __future__ import annotations # for forward references in type hints, used in the Collection class for items attribute
 from .RDEModel import UUIDEntity, MultiLingualValue, UUIDManager
 from dataclasses import dataclass
-from typing import Optional, OrderedDict
+from typing import Optional
+from collections import OrderedDict
 from enum import Enum
 from urllib.parse import quote_plus
 from pandas.core.indexes.multi import MultiIndex
@@ -25,6 +26,8 @@ def int_tuple_list_to_svg_string(tpl: list[tuple[int,int]]) -> str:
         Understanding the SVG path command: https://developer.mozilla.org/en-US/docs/Web/SVG/Tutorial/Paths
     """
     # example: "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink'><g><path d='M270.000000,1900.000000 L1530.000000,1900.000000 L1530.000000,1610.000000 L1315.000000,1300.000000 L1200.000000,986.000000 L904.000000,661.000000 L600.000000,986.000000 L500.000000,1300.000000 L270,1630 L270.000000,1900.000000' /></g></svg>"
+    if not tpl:
+        raise ValueError("At least one coordinate is required to generate an SVG path")
     svg_preample = "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink'><g>"
     path_preample = f"<path d='M{tpl[0][0]},{tpl[0][1]}"
     path_body = ' '.join([f'L{v[0]},{v[1]}' for v in tpl[1:]])
@@ -71,11 +74,12 @@ def ordered_dict_to_iiif_toc_structure(d: OrderedDict, lan:str, val:str, range_i
         if isinstance(v, OrderedDict):
             itms.append(ordered_dict_to_iiif_toc_structure(v, lan, k, f'{range_id_pref}/{i+1}'))
         else:
+            canvas_ids = v if isinstance(v, (list, tuple)) else [v]
             itms.append({
                 "id": f'{range_id_pref}/{i+1}',
                 "type": "Range",
                 "label": {lan: [k]},
-                "items": [{"id": canvas_id, "type": "Canvas"} for canvas_id in v]
+                "items": [{"id": canvas_id, "type": "Canvas"} for canvas_id in canvas_ids]
             })
     res["items"] = itms
     return res
@@ -93,6 +97,7 @@ def url_encoded_iiif_image_url(prefix_url: str, path:str) -> str:
     return f"{prefix_url}/{quote_plus(path)}"
 
 
+@dataclass
 class FileReference(UUIDEntity):
     """Reference to a file resource with a unique identifier.
     
@@ -201,8 +206,6 @@ class FileReference(UUIDEntity):
         Returns:
             Model object with the file reference as its object_ref.
         """
-        metadata = self.get_model_metadata()
-        
         return Model(
             id=uuid_manager._generate_uuid(f'file_ref_model/{self.id}'),
             label=label,
@@ -285,7 +288,7 @@ class Selector():
             case SelectorType.XYWH:
                 return f'{self.source}#xywh={self.value[0]},{self.value[1]},{self.value[2]},{self.value[3]}'
             case _:
-                raise ValueError('Selector type not recognized:', sel.type)
+                raise ValueError(f'Selector type not recognized: {self.type}')
 
 @dataclass
 class Annotation(UUIDEntity):
@@ -311,14 +314,17 @@ class Annotation(UUIDEntity):
     external_resource: Optional[str] = None
 
     def __post_init__(self):
+        super().__post_init__()
         if self.lang and not self.value:
-            raise ValueError('Language provided without value for annotation:', self.id)
+            raise ValueError(f'Language provided without value for annotation: {self.id}')
         if self.value and not self.lang:
-            raise ValueError('Value provided without language for annotation:', self.id)
+            raise ValueError(f'Value provided without language for annotation: {self.id}')
         if self.selector and not self.value:
-            raise ValueError('Selector provided without value for annotation:', self.id)
+            raise ValueError(f'Selector provided without value for annotation: {self.id}')
         if not self.selector and not self.value and not self.lang and not self.hr_id:
-            raise ValueError('Annotation should have at least a value, a language, a selector or an hr_id:', self.id)
+            raise ValueError(
+                f'Annotation should have at least a value, a language, a selector or an hr_id: {self.id}'
+            )
 
     def to_iiif(self, uuid_manager: UUIDManager, canvas_id:str, canvas_type: str = "Canvas") -> dict:
         """Convert annotation to IIIF Presentation API format.
@@ -608,6 +614,14 @@ class Collection(UUIDEntity):
     """
     label: MultiLingualValue
     items: list[Document | Collection]
+
+    def to_iiif_manifest_item(self, url_prefix: str, with_thumbnail: bool = True) -> dict:
+        """Convert a nested collection to a compact IIIF collection reference."""
+        return {
+            "id": self.id,
+            "type": "Collection",
+            "label": self.label.values,
+        }
 
     def to_iiif(self, url_prefix: str, with_thumbnails:bool=True, presentation_version:str = '3') -> dict:
         """Convert collection to IIIF Presentation API Collection format.

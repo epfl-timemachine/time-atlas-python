@@ -63,6 +63,7 @@ documentation/
 │   ├── _templates/       # Custom templates
 │   ├── api/              # API reference documentation
 │   │   ├── rdemodel.rst  # RDE Model documentation
+│   │   ├── documentmodel.rst # IIIF Document Model documentation
 │   │   ├── timeatlas.rst # TimeAtlas client documentation
 │   │   └── enums.rst     # Enumerations documentation
 │   ├── conf.py           # Sphinx configuration

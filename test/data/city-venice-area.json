@@ -1,0 +1,52 @@
+{
+ "name": "city-venice-area",
+ "type_in_file": [
+  "area"
+ ],
+ "creation_time": "2026-05-27T14:58:33.885899",
+ "rde_objects": [
+  {
+   "id": "ce22c093-3d47-56b8-bf06-0ab86bda0db4",
+   "slug": "city-venice-area",
+   "name": {
+    "en": [
+     "Venice Area"
+    ],
+    "fr": [
+     "Aire de Venise"
+    ],
+    "it": [
+     "Area di Venezia"
+    ]
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       12.290776992,
+       45.373579637
+      ],
+      [
+       12.290776992,
+       45.497617311
+      ],
+      [
+       12.469331224,
+       45.497617311
+      ],
+      [
+       12.469331224,
+       45.373579637
+      ],
+      [
+       12.290776992,
+       45.373579637
+      ]
+     ]
+    ]
+   },
+   "rde_type": "area"
+  }
+ ]
+}

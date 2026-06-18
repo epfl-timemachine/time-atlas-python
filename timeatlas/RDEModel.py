@@ -203,7 +203,16 @@ class RDE:
                     # works for dataset configuration as well, as it inherits from RDE, but does not have rde_type field, so it will not be added in the final dict
                     result[field_name] = field_value.to_dict()
                 case list():
-                    result[field_name] = [item.get_ref() if isinstance(item, RDE) else item for item in field_value]
+                    result[field_name] = [
+                        item.get_ref()
+                        if isinstance(item, UUIDEntity)
+                        else item.to_dict()
+                        if isinstance(item, RDE)
+                        else item.value
+                        if isinstance(item, Enum)
+                        else item
+                        for item in field_value
+                    ]
                 case Enum():
                     result[field_name] = field_value.value
                 case MultiLingualValue():
@@ -224,7 +233,8 @@ class RDE:
             The RDEType enum value or None if not a main RDE type
         """
         rde_name = self.__class__.__name__.lower()
-        return CLASS_NAME_TO_RDE.get(rde_name).value
+        rde_type = CLASS_NAME_TO_RDE.get(rde_name)
+        return rde_type.value if rde_type else None
     
     @classmethod
     def constructor_from_json_obj(cls, json_obj: dict) -> Self:
@@ -281,7 +291,7 @@ class MultiLingualValue:
         values: Dictionary mapping language codes (2-3 letters) to lists of text values
                 Example: {"en": ["English text"], "fr": ["Texte français"]}
     """
-    values: dict[str, list[str]]
+    values: dict[str, list[str]] = field(default_factory=dict)
 
 @dataclass
 class MetadataFieldConfig(RDE):
@@ -324,14 +334,14 @@ class MetadataFieldConfig(RDE):
         """
         return cls(
             id=json_obj['id'],
-            type=METADATA_TYPE_TO_ENUM.get(json_obj['type'], MetadataType.STRING),
+            type=METADATA_TYPE_TO_ENUM.get(json_obj.get('type'), MetadataType.STRING),
             display_label=MultiLingualValue(values=json_obj.get('display_label', {})),
             nullable=json_obj.get('nullable', True),
             indexable=json_obj.get('indexable', False),
             short_display=json_obj.get('short_display', False),
             hidden=json_obj.get('hidden', False),
-            tag=METADATA_TAG_TO_ENUM.get(json_obj['tag'], None),
-            paradata=PARADATA_VALUE_TO_ENUM.get(json_obj['paradata'], None)
+            tag=METADATA_TAG_TO_ENUM.get(json_obj.get('tag')),
+            paradata=PARADATA_VALUE_TO_ENUM.get(json_obj.get('paradata'))
         )
 
 @dataclass
@@ -394,12 +404,13 @@ class DatasetConfiguration(RDE):
         Returns:
             DatasetConfiguration instance
         """
+        dataset_config = json_obj.get('dataset_config', json_obj)
         return cls(
             metadata_field_config=[MetadataFieldConfig.constructor_from_json_obj(v) for v in json_obj.get('metadata_field_config', [])],
-            main_label=json_obj.get('dataset_config', {}).get('main_label', ''),
-            sub_label=json_obj.get('dataset_config', {}).get('sub_label', ''),
-            display_thumbnail=json_obj.get('dataset_config', {}).get('display_thumbnail', False),
-            external_source=json_obj.get('dataset_config', {}).get('external_source', False)
+            main_label=dataset_config.get('main_label', ''),
+            sub_label=dataset_config.get('sub_label', ''),
+            display_thumbnail=dataset_config.get('display_thumbnail', False),
+            external_source=dataset_config.get('external_source', False)
         )
     
     def to_dict(self, exclude_fields={}):
@@ -411,7 +422,6 @@ class DatasetConfiguration(RDE):
         Returns:
             Dictionary representation with serialized metadata field configs
         """
-        self.metadata_field_config = [v.to_dict() for v in self.metadata_field_config] if self.metadata_field_config else []
         return super().to_dict(exclude_fields=exclude_fields)
 
 @dataclass
@@ -595,8 +605,6 @@ class Dataset(RDE, UUIDEntity):
         Returns:
             Dictionary representation with serialized nested objects
         """
-        self.configuration = self.configuration.to_dict() if self.configuration else None
-        self.metadata = [v.to_dict() for v in self.metadata] if self.metadata else []
         return super().to_dict(exclude_fields=exclude_fields)
 
     def instantiate_all_rde_members(self, rde_list: list[RDE]) -> None:
@@ -608,11 +616,30 @@ class Dataset(RDE, UUIDEntity):
         Args:
             rde_list: List of RDE entities to filter and add
         """
+        hr_ids = {
+            rde.id
+            for rde in rde_list
+            if isinstance(rde, HistoricalRecord)
+            and (
+                rde.dataset.get_ref()
+                if isinstance(rde.dataset, UUIDEntity)
+                else rde.dataset
+            ) == self.id
+        }
         for rde in rde_list:
-            if hasattr(rde, "dataset") and RDEType.dataset == self.id:
+            dataset_ref = getattr(rde, "dataset", None)
+            dataset_id = dataset_ref.get_ref() if isinstance(dataset_ref, UUIDEntity) else dataset_ref
+            if dataset_id == self.id:
                 match rde:
                     case HistoricalRecord(): self.hrs.append(rde)
-                    case Observation(): self.obs.append(rde)
+            if isinstance(rde, Observation):
+                hr_ref = (
+                    rde.historical_record.get_ref()
+                    if isinstance(rde.historical_record, UUIDEntity)
+                    else rde.historical_record
+                )
+                if hr_ref in hr_ids:
+                    self.obs.append(rde)
 
 @dataclass
 class HistoricalRecord(RDE, UUIDEntity):
@@ -653,12 +680,14 @@ class HistoricalRecord(RDE, UUIDEntity):
         Returns:
             HistoricalRecord instance
         """
+        dataset_ref = json_obj['dataset']
+        if isinstance(dataset_ref, dict):
+            dataset_ref = dataset_ref.get('id')
         return cls(
             id=UUIDEntity.parse_uuid(json_obj['id']),
-            dataset=UUIDEntity.parse_uuid(json_obj['dataset']['id']),
+            dataset=UUIDEntity.parse_uuid(dataset_ref),
             time_range=RDETimeRange(json_obj['start_time'], json_obj['end_time']),
-            paradata=json_obj.get('paradata', ''),
-            type=json_obj.get('type', ''),
+            paradata=PARADATA_VALUE_TO_ENUM.get(json_obj.get('paradata'), json_obj.get('paradata')),
             has_observations=json_obj.get('has_observations', []),
             metadata=json_obj.get('metadata', {}),
             rights_attribution=json_obj.get('rights_attribution')
@@ -702,14 +731,13 @@ class HistoricalRecord(RDE, UUIDEntity):
         Returns:
             HistoricalRecord instance
         """
-        metadata_keys = set(row.index).difference({'uuid', 'dataset', 'start_time', 'end_time', 'paradata', 'type', 'has_observations', 'rights_attribution'})
+        metadata_keys = set(row.index).difference({'id', 'uuid', 'dataset', 'start_time', 'end_time', 'paradata', 'type', 'has_observations', 'rights_attribution'})
         metadata = {k: row[k] for k in metadata_keys}
         return cls(
-            id=UUIDEntity.parse_uuid(row['id']),
+            id=UUIDEntity.parse_uuid(row.get('id', row.get('uuid'))),
             dataset=UUIDEntity.parse_uuid(row['dataset']),
             time_range=RDETimeRange(row['start_time'], row['end_time']),
-            paradata=row.get('paradata', ''),
-            type=row.get('type', ''),
+            paradata=PARADATA_VALUE_TO_ENUM.get(row.get('paradata'), row.get('paradata')),
             has_observations=row.get('has_observations', []),
             metadata=metadata,
             rights_attribution=row.get('rights_attribution')
@@ -771,6 +799,11 @@ class PointOfInterest(RDE, UUIDEntity):
             )
         )
 
+    def to_dict(self) -> dict:
+        result = super().to_dict()
+        result['geometry'] = json.loads(shapely.to_geojson(self.geometry)) if self.geometry else None
+        return result
+
 @dataclass
 class Observation(RDE, UUIDEntity):
     """The space-time representation of information recorded in a historical source.
@@ -819,9 +852,13 @@ class Observation(RDE, UUIDEntity):
         """
         geom = json_obj.get('geometry')
         json_obj = json_obj.get('properties', json_obj)  # in case the JSON object is a GeoJSON Feature object
+        documented_in = json_obj.get('documented_in')
+        historical_record = json_obj.get('historical_record')
+        if historical_record is None and isinstance(documented_in, list) and documented_in:
+            historical_record = documented_in[0]
         return cls(
             id=UUIDEntity.parse_uuid(json_obj['id']),
-            historical_record=json_obj.get('documented_in')[0] if isinstance(json_obj.get('documented_in'), list) and len(json_obj.get('documented_in')) > 0 else None,
+            historical_record=UUIDEntity.parse_uuid(historical_record) if historical_record else None,
             geometry=shapely.from_geojson(json.dumps(geom)),
             has_geometries=json_obj.get('has_geometries', []),
             # height=HeightInfo(
@@ -830,6 +867,11 @@ class Observation(RDE, UUIDEntity):
             # ),
             part_of_point_of_interest=json_obj.get('part_of_point_of_interest', None)
         )
+
+    def to_dict(self) -> dict:
+        result = super().to_dict()
+        result['geometry'] = json.loads(shapely.to_geojson(self.geometry)) if self.geometry else None
+        return result
     
 @dataclass
 class GeographicalExtent:
@@ -881,6 +923,7 @@ class Map(RDE, UUIDEntity):
     thumbnail: Optional[str] = None
     version: Optional[str] = None
     areas: list[AreaReference] = field(default_factory=list)
+    extent: Optional[GeographicalExtent] = None
 
     @classmethod
     def constructor_from_json_obj(cls, json_obj: dict) -> Self:
@@ -902,7 +945,7 @@ class Map(RDE, UUIDEntity):
                                        label=MultiLingualValue(values=m.get('label', {})),
                                        value=MultiLingualValue(values=m.get('value', {}))) for m in json_obj.get('metadata', [])],
             thumbnail=json_obj.get('thumbnail'),
-            extent=GeographicalExtent(json_obj.get('extent', [])),
+            extent=GeographicalExtent(json_obj['extent']) if json_obj.get('extent') else None,
             version=json_obj.get('version'),
             areas=json_obj.get('areas', [])
         )
@@ -916,9 +959,17 @@ class Map(RDE, UUIDEntity):
         Returns:
             Dictionary representation with serialized nested objects
         """
-        self.metadata = [v.to_dict() for v in self.metadata] if self.metadata else []
-        self.layers = [layer.get_ref() if isinstance(layer, Layer) else layer['id'] if isinstance(layer, dict) and 'id' in layer else layer for layer in self.layers]
-        return super().to_dict(exclude_fields=exclude_fields)
+        result = super().to_dict(exclude_fields=set(exclude_fields) | {'layers', 'extent'})
+        result['layers'] = [
+            layer.get_ref()
+            if isinstance(layer, Layer)
+            else layer['id']
+            if isinstance(layer, dict) and 'id' in layer
+            else layer
+            for layer in self.layers
+        ]
+        result['extent'] = self.extent.coordinates if self.extent else None
+        return result
     
 @dataclass
 class LayerConfigurationService:
@@ -984,12 +1035,13 @@ class LayerConfiguration(RDE, UUIDEntity):
         Returns:
             Dictionary representation with serialized service and extent
         """
-        self.service = {
+        result = super().to_dict(exclude_fields=set(exclude_fields) | {'service', 'extent'})
+        result['service'] = {
             'url': self.service.url,
             'type': self.service.type
         }
-        self.extent = self.extent.coordinates if self.extent else None
-        return super().to_dict(exclude_fields)
+        result['extent'] = self.extent.coordinates if self.extent else None
+        return result
 
 @dataclass 
 class Layer(RDE, UUIDEntity):
@@ -1033,7 +1085,11 @@ class Layer(RDE, UUIDEntity):
             name=MultiLingualValue(values=json_obj['name']),
             description=MultiLingualValue(values=json_obj.get('description', {})),
             time_range=RDETimeRange(json_obj['start_time'], json_obj['end_time']),
-            map=UUIDEntity.parse_uuid(json_obj['map']['id']) if 'map' in json_obj and isinstance(json_obj['map'], dict) else None,
+            map=UUIDEntity.parse_uuid(json_obj['map']['id'])
+            if isinstance(json_obj.get('map'), dict)
+            else UUIDEntity.parse_uuid(json_obj['map'])
+            if json_obj.get('map')
+            else None,
             type=LAYER_TYPE_TO_ENUM.get(json_obj.get('type', '').upper(), LayerType.RASTER),
             layer_configurations=[LayerConfiguration.constructor_from_json_obj(lc) for lc in json_obj.get('layer_configurations', [])]
         )
@@ -1047,8 +1103,12 @@ class Layer(RDE, UUIDEntity):
         Returns:
             Dictionary representation with serialized layer configurations
         """
-        self.layer_configurations = [lc.to_dict() for lc in self.layer_configurations] if self.layer_configurations else []
-        return super().to_dict()
+        result = super().to_dict(exclude_fields=set(exclude_fields) | {'layer_configurations'})
+        result['layer_configurations'] = [
+            lc.to_dict() if isinstance(lc, LayerConfiguration) else lc
+            for lc in self.layer_configurations
+        ]
+        return result
 
 @dataclass
 class Geometry(RDE, UUIDEntity):
@@ -1072,11 +1132,12 @@ class Geometry(RDE, UUIDEntity):
     force_valid: bool = False  # if True, will attempt to fix invalid geometries instead of raising an error
 
     def __post_init__(self):
+        super().__post_init__()
         if isinstance(self.geometry, dict):
             self.geometry = shapely.from_geojson(json.dumps(self.geometry))
         if not self.geometry.is_valid:
             if not self.force_valid:
-                raise ValueError(f'Invalid geometry, because  {shapely.validation.explain_validity(self.geometry)}')
+                raise ValueError(f'Invalid geometry, because  {shapely.is_valid_reason(self.geometry)}')
             self.geometry = shapely.make_valid(self.geometry)
 
     @classmethod
@@ -1092,12 +1153,16 @@ class Geometry(RDE, UUIDEntity):
             Geometry instance
         """
         # to note, the JSON object is a GeoJSON Feature object
-        props = json_obj.get('properties', {})
+        props = json_obj.get('properties', json_obj)
         geometry = json_obj.get('geometry', {})
+        part_of_layer = props.get('part_of_layer')
+        if isinstance(part_of_layer, dict):
+            part_of_layer = part_of_layer.get('id')
         return cls(
             id=UUIDEntity.parse_uuid(props.get('id', json_obj.get('id'))),
-            part_of_layer=UUIDEntity.parse_uuid(props.get('part_of_layer')) if 'part_of_layer' in props else None,
+            part_of_layer=UUIDEntity.parse_uuid(part_of_layer) if part_of_layer else None,
             geometry=shapely.from_geojson(json.dumps(geometry)),
+            force_valid=props.get('force_valid', False),
         )
     
     @classmethod
@@ -1161,6 +1226,12 @@ class Area(RDE, UUIDEntity):
         """
         return cls(
             id=UUIDEntity.parse_uuid(json_obj['id']),
+            slug=json_obj['slug'],
             name=MultiLingualValue(values=json_obj['name']),
             geometry=shapely.from_geojson(json.dumps(json_obj.get('geometry', {})))
         )
+
+    def to_dict(self) -> dict:
+        result = super().to_dict()
+        result['geometry'] = json.loads(shapely.to_geojson(self.geometry))
+        return result

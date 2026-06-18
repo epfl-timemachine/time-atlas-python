@@ -1,0 +1,219 @@
+import copy
+import importlib
+import json
+import uuid
+from datetime import datetime
+
+import pytest
+from shapely.geometry import Point
+
+from timeatlas import (
+    Geometry,
+    HistoricalRecord,
+    Map,
+    Observation,
+    RDE,
+    RDECollection,
+)
+from timeatlas.TimeAtlas import _ShapelyEncoder
+
+
+timeatlas_module = importlib.import_module("timeatlas.TimeAtlas")
+
+
+def uid(value: int) -> str:
+    return str(uuid.UUID(int=value))
+
+
+def test_collection_add_accepts_single_entities_and_lists(entity_graph):
+    collection = RDECollection([])
+    collection.add(entity_graph["dataset"])
+    collection.add([entity_graph["historical_record"], entity_graph["observation"]])
+    assert collection.rdes == [
+        entity_graph["dataset"],
+        entity_graph["historical_record"],
+        entity_graph["observation"],
+    ]
+
+
+def test_shapely_encoder_serializes_geometry_and_delegates_unknown_values():
+    assert json.loads(json.dumps(Point(1, 2), cls=_ShapelyEncoder)) == {
+        "type": "Point",
+        "coordinates": [1.0, 2.0],
+    }
+    with pytest.raises(TypeError):
+        json.dumps(object(), cls=_ShapelyEncoder)
+
+
+def test_collection_save_and_read_round_trip_all_supported_entity_types(
+    tmp_path, entity_graph
+):
+    collection = RDECollection(entity_graph["all"])
+    collection.save_rde_to_files(str(tmp_path))
+
+    expected_files = {
+        "dataset.json",
+        "historical_records.json",
+        "observations.json",
+        "points_of_interest.json",
+        "geometries.json",
+        "maps.json",
+        "layers.json",
+    }
+    assert {path.name for path in tmp_path.glob("*.json")} == expected_files
+
+    restored = RDECollection.read_rde_from_files(str(tmp_path))
+    assert {type(item) for item in restored.rdes} == {type(item) for item in entity_graph["all"]}
+    assert {item.id for item in restored.rdes} == {item.id for item in entity_graph["all"]}
+
+
+def test_collection_save_is_idempotent_unless_overwrite_is_requested(
+    tmp_path, entity_graph, monkeypatch
+):
+    class InitialDateTime:
+        @staticmethod
+        def now():
+            return datetime(2020, 1, 1)
+
+    class LaterDateTime:
+        @staticmethod
+        def now():
+            return datetime(2021, 1, 1)
+
+    collection = RDECollection([entity_graph["geometry"]])
+    monkeypatch.setattr(timeatlas_module, "datetime", InitialDateTime)
+    collection.save_rde_to_files(str(tmp_path))
+    path = tmp_path / "geometries.json"
+    initial = json.loads(path.read_text())
+
+    monkeypatch.setattr(timeatlas_module, "datetime", LaterDateTime)
+    collection.save_rde_to_files(str(tmp_path))
+    unchanged = json.loads(path.read_text())
+    collection.save_rde_to_files(str(tmp_path), overwrite=True)
+    overwritten = json.loads(path.read_text())
+
+    assert unchanged["creation_time"] == initial["creation_time"]
+    assert overwritten["creation_time"] == "2021-01-01T00:00:00"
+
+
+def test_collection_save_filters_types_and_skips_unknown_rdes(tmp_path, entity_graph):
+    collection = RDECollection(entity_graph["all"] + [RDE()])
+    collection.save_rde_to_files(
+        str(tmp_path), rde_types=[HistoricalRecord, Observation]
+    )
+    assert {path.name for path in tmp_path.glob("*.json")} == {
+        "historical_records.json",
+        "observations.json",
+    }
+
+
+def test_collection_read_ignores_non_json_unknown_and_empty_envelopes(tmp_path):
+    (tmp_path / "notes.txt").write_text("ignored")
+    (tmp_path / "unknown.json").write_text(
+        json.dumps({"rde_objects": [{"id": uid(1), "rde_type": "unknown"}]})
+    )
+    (tmp_path / "empty.json").write_text(json.dumps({"rde_objects": []}))
+    assert RDECollection.read_rde_from_files(str(tmp_path)).rdes == []
+
+
+def test_collection_read_propagates_malformed_json(tmp_path):
+    (tmp_path / "broken.json").write_text("{")
+    with pytest.raises(json.JSONDecodeError):
+        RDECollection.read_rde_from_files(str(tmp_path))
+
+
+def test_collection_read_requires_existing_directory(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        RDECollection.read_rde_from_files(str(tmp_path / "missing"))
+
+
+def test_collection_consolidate_is_currently_a_noop(entity_graph):
+    collection = RDECollection(entity_graph["all"])
+    assert collection.consolidate_data() is None
+    assert collection.rdes == entity_graph["all"]
+
+
+def test_collection_validation_accepts_complete_graph_and_marks_it_valid(entity_graph):
+    collection = RDECollection(entity_graph["all"])
+    assert collection.validate_data() is True
+    assert collection._valid_data is True
+
+
+def test_collection_validation_accepts_materialized_object_references(entity_graph):
+    graph = entity_graph
+    graph["historical_record"].has_observations = [graph["observation"]]
+    graph["observation"].historical_record = graph["historical_record"]
+    graph["observation"].has_geometries = [graph["geometry"]]
+    graph["observation"].part_of_point_of_interest = graph["point_of_interest"]
+    graph["map"].layers = [graph["layer"]]
+    graph["layer"].map = graph["map"]
+
+    assert RDECollection(graph["all"]).validate_data() is True
+
+
+def test_collection_validation_reports_global_duplicate_ids(entity_graph):
+    duplicate = copy.deepcopy(entity_graph["geometry"])
+    collection = RDECollection(entity_graph["all"] + [duplicate])
+    with pytest.raises(ValueError, match="Duplicate UUIDs found"):
+        collection.validate_data()
+
+
+@pytest.mark.parametrize(
+    ("entity_name", "field_name", "duplicate_id", "message"),
+    [
+        ("historical_record", "has_observations", uid(3), "duplicate UUIDs in has_observations"),
+        ("observation", "has_geometries", uid(4), "duplicate UUIDs in has_geometries"),
+        ("map", "layers", uid(7), "duplicate UUIDs in layers"),
+    ],
+)
+def test_collection_validation_reports_duplicate_array_references(
+    entity_graph, entity_name, field_name, duplicate_id, message
+):
+    setattr(entity_graph[entity_name], field_name, [duplicate_id, duplicate_id])
+    with pytest.raises(ValueError, match=message):
+        RDECollection(entity_graph["all"]).validate_data()
+
+
+@pytest.mark.parametrize(
+    ("entity_name", "field_name", "missing_id", "message"),
+    [
+        ("historical_record", "dataset", uid(100), "references missing Dataset"),
+        (
+            "historical_record",
+            "has_observations",
+            [uid(101)],
+            "references missing Observation",
+        ),
+        ("observation", "historical_record", uid(102), "references missing HistoricalRecord"),
+        (
+            "observation",
+            "part_of_point_of_interest",
+            uid(103),
+            "references missing PointOfInterest",
+        ),
+        ("observation", "has_geometries", [uid(104)], "references missing Geometry"),
+        ("layer", "map", uid(105), "references missing Map"),
+        ("map", "layers", [uid(106)], "references missing Layer"),
+    ],
+)
+def test_collection_validation_reports_stale_references(
+    entity_graph, entity_name, field_name, missing_id, message
+):
+    setattr(entity_graph[entity_name], field_name, missing_id)
+    with pytest.raises(ValueError, match=message):
+        RDECollection(entity_graph["all"]).validate_data()
+
+
+def test_collection_validation_exempts_external_area_and_layer_references(entity_graph):
+    entity_graph["dataset"].has_areas = [uid(120)]
+    entity_graph["geometry"].part_of_layer = uid(121)
+    entity_graph["map"].areas = [uid(122)]
+    assert RDECollection(entity_graph["all"]).validate_data() is True
+
+
+def test_collection_validation_ignores_boolean_unresolved_poi_flag(entity_graph):
+    entity_graph["observation"].part_of_point_of_interest = False
+    without_poi = [
+        item for item in entity_graph["all"] if item is not entity_graph["point_of_interest"]
+    ]
+    assert RDECollection(without_poi).validate_data() is True

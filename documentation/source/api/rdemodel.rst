@@ -42,6 +42,12 @@ The module defines several type aliases for improved code readability:
 Base Classes
 ------------
 
+.. autoclass:: timeatlas.RDEModel.UUIDManager
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
 .. autoclass:: timeatlas.RDEModel.UUIDEntity
    :members:
    :undoc-members:

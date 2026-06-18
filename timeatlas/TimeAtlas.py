@@ -90,30 +90,31 @@ class TimeAtlas:
 
     def get_dataset_by_slug(self, slug: str) -> Dataset:
         resp = requests.get(f'{self.api_url}/datasets', headers={'Accept': 'application/json'})
+        resp.raise_for_status()
         data = resp.json()
         for dataset in data['items']:
             if dataset['slug'] == slug:
                 ds = Dataset.constructor_from_json_obj(dataset)
-                self.entity_cache[dataset['uuid']] = ds
+                self.entity_cache[ds.id] = ds
                 return ds
         raise ValueError(f'Dataset with slug {slug} not found')
 
     def generate_all_hr_from_dataset(self, dataset: Dataset) -> list[HistoricalRecord]:
         hr_jsons = self.get_all_results_from_endpoint('hr/search?query=&dataset_slug=' + dataset.slug, per_page=1000)
-        hrs = [HR.constructor_from_json_obj(hr_json) for hr_json in hr_jsons]
-        self.entity_cache.update({hr.uuid: hr for hr in hrs})
+        hrs = [HistoricalRecord.constructor_from_json_obj(hr_json) for hr_json in hr_jsons]
+        self.entity_cache.update({hr.id: hr for hr in hrs})
         return hrs
 
     # Waring: very slow. Waiting on a better API endpoint to retrieve all obs for a dataset
     def generate_obs_from_list_of_hr(self, hr_list: list[HistoricalRecord]) -> list[Observation]:
         obs_uuids = set()
         for hr in hr_list:
-            for obs_ref in hr.documents:
+            for obs_ref in hr.has_observations:
                 match obs_ref:
                     case str():
                         obs_uuids.add(obs_ref)
                     case Observation():
-                        obs_uuids.add(obs_ref.uuid)
+                        obs_uuids.add(obs_ref.id)
         obs_list = []
         # for obs_uuid in tqdm(obs_uuids, desc='Fetching observations'):
         for obs_uuid in obs_uuids:
@@ -123,12 +124,12 @@ class TimeAtlas:
     def generate_geoms_from_list_of_obs(self, obs_list: list[Observation    ]) -> list[Geometry]:
         geom_uuids = set()
         for obs in obs_list:
-            for geom_ref in obs.has_geometry:
+            for geom_ref in obs.has_geometries:
                 match geom_ref:
                     case str():
                         geom_uuids.add(geom_ref)
                     case Geometry():
-                        geom_uuids.add(geom_ref.uuid)
+                        geom_uuids.add(geom_ref.id)
         geom_list = []
         # for geom_uuid in tqdm(geom_uuids, desc='Fetching geometries'):
         for geom_uuid in geom_uuids:
@@ -139,12 +140,12 @@ class TimeAtlas:
     def generate_pois_from_list_of_obs(self, obs_list: list[Observation]) -> list[PointOfInterest]:
         poi_uuids = set()
         for obs in obs_list:
-            poi_ref = obs.has_handle
+            poi_ref = obs.part_of_point_of_interest
             match poi_ref:
                 case str():
                     poi_uuids.add(poi_ref)
                 case PointOfInterest():
-                    poi_uuids.add(poi_ref.uuid)
+                    poi_uuids.add(poi_ref.id)
         poi_list = []
         # for poi_uuid in tqdm(poi_uuids, desc='Fetching POIs'):
         for poi_uuid in poi_uuids:
@@ -346,6 +347,13 @@ class RDECollection:
                 rdes.append(rde_class.constructor_from_json_obj(obj))
         return cls(rdes)
 
+    def consolidate_data(self) -> None:
+        """
+        Produce the PoIS and update observations references to them.
+        """
+        # TODO: decide wether useful or not.
+        pass
+
     def validate_data(self) -> bool:
         """Validate the internal consistency of all RDE entities in the collection.
 
@@ -508,5 +516,5 @@ class RDECollection:
                 f'RDECollection validation failed with {len(errors)} error(s):\n'
                 + '\n'.join(f'  - {e}' for e in errors)
             )
-
+        self._valid_data = True
         return True

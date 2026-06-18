@@ -12,6 +12,15 @@ Main Client Class
    :show-inheritance:
    :special-members: __init__
 
+RDE Collections
+---------------
+
+.. autoclass:: timeatlas.TimeAtlas.RDECollection
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
 Usage Examples
 --------------
 
@@ -45,3 +54,18 @@ client initializations.
 
     # Save cache to custom location
     client.save_entity_cache_to_file('custom_cache.pkl')
+
+Serializing and Validating RDE Collections
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``RDECollection`` groups entities for validation and file-based interchange.
+
+.. code-block:: python
+
+    from timeatlas import RDECollection
+
+    collection = RDECollection([dataset, historical_record, observation])
+    collection.validate_data()
+    collection.save_rde_to_files("export", overwrite=True)
+
+    restored = RDECollection.read_rde_from_files("export")

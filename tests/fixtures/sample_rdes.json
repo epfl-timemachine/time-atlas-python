@@ -1,0 +1,144 @@
+{
+  "dataset.json": {
+    "id": "266e0ce9-26f4-50bc-b75b-c5d3b71fed82",
+    "slug": "venice-1808-sommarioni",
+    "name": {
+      "en": ["1808 – Land Registers"],
+      "it": ["1808 – Registri fondiari"]
+    },
+    "start_time": "1808-01-01T00:00:00",
+    "end_time": "1808-12-31T23:59:59",
+    "creation_time": "2026-06-11T16:30:21.490366",
+    "version": "1.1",
+    "sources": ["b2aae0de-bac0-5965-af70-f346f2dceb29"],
+    "has_areas": [
+      "ce22c093-3d47-56b8-bf06-0ab86bda0db4",
+      "ae0fb021-bbb4-5de7-bca2-afddad4b9d17"
+    ],
+    "configuration": {
+      "metadata_field_config": [
+        {
+          "id": "parcel_number",
+          "type": "STRING",
+          "display_label": {
+            "en": ["Parcel's Number"],
+            "it": ["Numero di particella"]
+          },
+          "nullable": false,
+          "indexable": true,
+          "short_display": true,
+          "hidden": false,
+          "tag": "PLACE",
+          "paradata": "m"
+        }
+      ],
+      "main_label": "${owner_transcription}",
+      "sub_label": "${place}",
+      "display_thumbnail": false,
+      "external_source": false
+    },
+    "metadata": [
+      {
+        "type": "STRING",
+        "label": {"en": ["Description"]},
+        "value": {"en": ["Representative dataset fixture derived from test/data."]}
+      }
+    ],
+    "rde_type": "dataset"
+  },
+  "map.json": {
+    "id": "f231eb4c-5f32-52cb-83b3-adcab99f3878",
+    "name": {"en": ["Digital Facsimile of the Cadastral Map"]},
+    "slug": "venice-1808-map",
+    "start_time": "1808-01-01T00:00:00",
+    "end_time": "1848-12-31T23:59:59",
+    "layers": [
+      "7a23924c-3711-5e81-97c8-e3755a7eea69",
+      "524373ad-2701-5c13-8f4c-b2d1b0cb394a"
+    ],
+    "metadata": [
+      {
+        "type": "STRING",
+        "label": {"en": ["Description"]},
+        "value": {"en": ["Representative map fixture derived from test/data."]}
+      }
+    ],
+    "thumbnail": "https://image.example.test/thumbnail.jpg",
+    "version": "1.0",
+    "areas": ["ce22c093-3d47-56b8-bf06-0ab86bda0db4"],
+    "rde_type": "map"
+  },
+  "layers.json": {
+    "id": "7a23924c-3711-5e81-97c8-e3755a7eea69",
+    "slug": "venice-1808-map-sommmarioni-base",
+    "name": {"en": ["Historical maps of the parcels"]},
+    "description": {"en": ["Digital facsimile of the original cadaster map."]},
+    "start_time": "1808-01-01T00:00:00",
+    "end_time": "1808-12-31T23:59:59",
+    "map": "f231eb4c-5f32-52cb-83b3-adcab99f3878",
+    "type": "raster",
+    "layer_configurations": [
+      {
+        "id": "9adecf8f-194c-5afe-b707-be2c8a86e705",
+        "service": {
+          "url": "https://geo.example.test/tiles/{z}/{x}/{y}.png",
+          "type": "xyz"
+        },
+        "min_zoom_level": 11,
+        "max_zoom_level": 21,
+        "extent": [12.3065061, 45.4241568, 12.3698376, 45.4522034],
+        "rde_type": "layer_configuration"
+      }
+    ],
+    "rde_type": "layer"
+  },
+  "city-venice-area.json": {
+    "id": "ce22c093-3d47-56b8-bf06-0ab86bda0db4",
+    "slug": "city-venice-area",
+    "name": {"en": ["Venice Area"]},
+    "geometry": {
+      "type": "Polygon",
+      "coordinates": [
+        [
+          [12.290776992, 45.373579637],
+          [12.290776992, 45.497617311],
+          [12.469331224, 45.497617311],
+          [12.469331224, 45.373579637],
+          [12.290776992, 45.373579637]
+        ]
+      ]
+    },
+    "rde_type": "area"
+  },
+  "observations.json": {
+    "id": "00010277-d6db-5369-81fb-91a44dee7cf7",
+    "historical_record": "4408ca81-3411-50e1-8152-9f9520271999",
+    "has_geometries": [
+      "f3c957bc-2e6e-5b11-a63c-750ba7325ff0",
+      "a7f09ee8-b1b4-5e7f-a1a6-22fd7591102d"
+    ],
+    "part_of_point_of_interest": "ad7e55ba-7ebf-5cbc-a556-c94d10e4e80b",
+    "rde_type": "observation",
+    "geometry": {
+      "type": "Point",
+      "coordinates": [12.325784420270677, 45.434076569439455]
+    }
+  },
+  "geometries.json": {
+    "id": "038a94d5-cc04-5ea8-9a62-e47f5b8d6bcf",
+    "geometry": {
+      "type": "Polygon",
+      "coordinates": [
+        [
+          [12.3433387, 45.4382745],
+          [12.3432396, 45.4382918],
+          [12.3430751, 45.4383212],
+          [12.3433387, 45.4382745]
+        ]
+      ]
+    },
+    "part_of_layer": "524373ad-2701-5c13-8f4c-b2d1b0cb394a",
+    "force_valid": true,
+    "rde_type": "geometry"
+  }
+}

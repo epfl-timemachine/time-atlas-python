@@ -1,0 +1,224 @@
+{
+    "UUID_NAMESPACE": "https://timemachine.epfl.ch/venice/sommarioni",
+    "TIMERANGE_MINIMUM": 18080101,
+    "TIMERANGE_MAXIMUM": 18081231,
+    "AREA_LOCS": ["../../areas/data/city-venice-area.json", "../../areas/data/country-italy-area.json"],
+    "DATASET_CONFIGURATION": {
+        "slug": "venice-1808-sommarioni",
+        "name": {
+            "en": ["1808 – Land Registers"],
+            "it": ["1808 – Registri fondiari"],
+            "fr": ["1808 – Registres fonciers"],
+            "de": ["1808 – Grundregister"]
+        },
+        "dataset_metadata_config":  {
+            "description": {
+                "type": "STRING",
+                "display_label": {
+                    "en": ["Description"],
+                    "fr": ["Description"],
+                    "it": ["Descrizione"],
+                    "de": ["Beschreibung"]
+                },
+                "value": {
+                    "en": ["Semi-automated transcription from the Napoleonic land registry and cadastral maps. The dataset contains parcel identifiers, ownership, land use, toponyms, geolocation, and area. Information geolocated by machine learning algorithms. Semi-automatic checking. Dataset created at EPFL."],
+                    "it": ["Trascrizione semi-automatica dal catasto fondiario napoleonico e dalle mappe catastali. Il dataset contiene identificatori di particelle, proprietà, uso del suolo, toponimi, geolocalizzazione e area. Informazioni geolocalizzate da algoritmi di apprendimento automatico. Controllo semi-automatico. Dataset creato presso l'EPFL."],
+                    "fr": ["Transcription semi-automatique du cadastre foncier napoléonien et des cartes cadastrales. Le jeu de données contient des identifiants de parcelles, des propriétés, un usage des terres, des toponymes, une géolocalisation et une superficie. Informations géolocalisées par des algorithmes d'apprentissage automatique. Vérification semi-automatique. Jeu de données créé à l'EPFL."],
+                    "de": ["Semi-automatisierte Transkription aus dem napoleonischen Grundbuch und den Katasterkarten. Der Datensatz enthält Parzellenkennungen, Eigentum, Landnutzung, Toponyme, Geolokalisierung und Fläche. Informationen, die durch maschinelle Lernalgorithmen geolokalisiert wurden. Semi-automatische Überprüfung. Datensatz erstellt an der EPFL."]
+                }
+            },
+            "paradata": {
+                "type": "STRING",
+                "display_label": {
+                    "en": ["Paradata"],
+                    "fr": ["Paradata"],
+                    "it": ["Paradata"],
+                    "de": ["Paradata"]
+                },
+                "value": {
+                    "en": ["The textual data from the register was manually transcribed, then semi-automatically cleaned and normalized by various researchers. The maps were vetcorized into geometries through computer vision techniques and then manually corrected and expanded."],
+                    "fr": ["Les données textuelles du registre ont été manuellement transcrites, puis nettoyées et normalisées semi-automatiquement par divers chercheurs. Les cartes ont été vectorisées en géométries grâce à des techniques de vision par ordinateur, puis corrigées et étendues manuellement."],    
+                    "it": ["I dati testuali del registro sono stati trascritti manualmente, quindi puliti e normalizzati semi-automaticamente da vari ricercatori. Le mappe sono state vettorializzate in geometrie attraverso tecniche di visione artificiale e quindi corrette ed espandere"],
+                    "de": ["Die textuellen Daten aus dem Register wurden manuell von verschiedenen Forschern transkribiert, dann semi-automatisch bereinigt und normalisiert. Die Karten wurden durch Techniken der Computer Vision in Geometrien umgewandelt und anschließend manuell korrigiert und erweitert."]
+                }
+            },
+            "archival reference": {
+                "type": "STRING",
+                "display_label": {
+                    "en": ["Archival reference"],
+                    "fr": ["Côte d'archive"],
+                    "it": ["Riferimento archivistico"],
+                    "de": ["Archivreferenz"]
+                },
+                "value": {
+                    "en": ["Archivio di Stato di Venezia, Catasti, Censo Stabile, Sommarioni"],
+                    "fr": ["Archivio di Stato di Venezia, Catasti, Censo Stabile, Sommarioni"],
+                    "it": ["Archivio di Stato di Venezia, Catasti, Censo Stabile, Sommarioni"],
+                    "de": ["Archivio di Stato di Venezia, Catasti, Censo Stabile, Sommarioni"]
+                }
+            },
+            "url": {
+                "type": "URL",
+                "display_label": {
+                    "en": ["Archival index"],
+                    "fr": ["Indice d'archive"],
+                    "it": ["Indice archivistico"],
+                    "de": ["Archivindex"]
+                },
+                "value": {
+                    "en": ["https://asve.arianna4.cloud/patrimonio/3130157f-7f30-4fc3-823b-e515896bc0f6/002-serie-sommarioni"],
+                    "fr": ["https://asve.arianna4.cloud/patrimonio/3130157f-7f30-4fc3-823b-e515896bc0f6/002-serie-sommarioni"],
+                    "it": ["https://asve.arianna4.cloud/patrimonio/3130157f-7f30-4fc3-823b-e515896bc0f6/002-serie-sommarioni"],
+                    "de": ["https://asve.arianna4.cloud/patrimonio/3130157f-7f30-4fc3-823b-e515896bc0f6/002-serie-sommarioni"]
+                }
+            },
+            "doi": {
+                "type": "URL",
+                "display_label": {
+                    "en": ["Zenodo DOI"],
+                    "fr": ["DOI Zenodo"],
+                    "it": ["DOI Zenodo"],
+                    "de": ["Zenodo DOI"]
+                },
+                "value": {
+                    "en": ["https://doi.org/10.5281/zenodo.16761168"],
+                    "fr": ["https://doi.org/10.5281/zenodo.16761168"],
+                    "it": ["https://doi.org/10.5281/zenodo.16761168"],
+                    "de": ["https://doi.org/10.5281/zenodo.16761168"]
+                }
+            },
+            "papier_doi": {
+                "type": "URL",
+                "display_label": {
+                    "en": ["Paper DOI"],
+                    "fr": ["DOI de l'article"],
+                    "it": ["DOI dell'articolo"],
+                    "de": ["DOI des Artikels"]
+                },
+                "value": {
+                    "en": ["https://doi.org/10.5334/johd.371"],
+                    "fr": ["https://doi.org/10.5334/johd.371"],
+                    "it": ["https://doi.org/10.5334/johd.371"],
+                    "de": ["https://doi.org/10.5334/johd.371"]
+                }
+            },
+            "github": {
+                "type": "URL",
+                "display_label": {
+                    "en": ["GitHub link"],
+                    "fr": ["Lien GitHub"],
+                    "it": ["GitHub"],
+                    "de": ["GitHub-Link"]
+                },
+                "value": {
+                    "en": ["https://github.com/epfl-timemachine/venice-1808-landregister"],
+                    "fr": ["https://github.com/epfl-timemachine/venice-1808-landregister"],
+                    "it": ["https://github.com/epfl-timemachine/venice-1808-landregister"],
+                    "de": ["https://github.com/epfl-timemachine/venice-1808-landregister"]
+                }
+            }
+        },
+        "indexed": [
+            "place",
+            "owner_standardised",
+            "owner_standardised_class",
+            "owner_supplementary",
+            "old_entity_standardised",
+            "old_entity_standardised_class",
+            "ownership_types_en",
+            "qualities_en",
+            "owner_type",
+            "owner_right_of_use_en",
+            "old_owner_right_of_use_en",
+            "old_religious_entity_type_en",
+            "owner_wd",
+            "old_entity_wd",
+            "parcel_number",
+            "sub_parcel_number"
+        ],
+        "short_display" : [
+            "owner_standardised", 
+            "place", 
+            "parcel_number", 
+            "sub_parcel_number"
+        ],
+        "hidden": [
+            "austrian_cadaster_correspondance",
+            "austro_italian_cadaster_correspondance",
+            "unique_id",
+            "page_number"
+        ],
+        "automatic_fields": [
+            "citation"
+        ],
+        "manual_fields": [
+            "parcel_number",
+            "sub_parcel_number",
+            "owner_transcription",
+            "place",
+            "house_number"
+        ],
+        "semi_automatic_fields": [
+            "owner_standardised",
+            "owner_standardised_class",
+            "ownership_types_en",
+            "qualities_en",
+            "parish_standardised",
+            "district",
+            "austrian_cadaster_correspondance",
+            "austro_italian_cadaster_correspondance",
+            "old_entity",
+            "old_entity_standardised",
+            "old_entity_standardised_class",
+            "owner_type",
+            "old_religious_entity_type_en",
+            "owner_right_of_use_en",
+            "old_owner_right_of_use_en",
+            "owner_supplementary",
+            "page_number"
+        ],
+        "ai_fields": [
+        ],
+        "main_label": "${owner_transcription}",
+        "sub_label": "${place}",
+        "tagged_fields": {
+            "owner_standardised": "PEOPLE",
+            "owner_transcription": "PEOPLE",
+            "place": "PLACE",
+            "parcel_number": "PLACE",
+            "sub_parcel_number": "PLACE",
+            "house_number": "PLACE",
+            "ownership_types_en": "LAND_USE",
+            "owner_right_of_use_en": "LAND_USE",
+            "old_owner_right_of_use_en": "LAND_USE",
+            "qualities_en": "LAND_USE"
+        },
+        "labels": {
+            "parcel_number": {"en": ["Parcel's Number"], "fr": ["Numéro de parcelle"], "it": ["Numero di particella"]},
+            "sub_parcel_number": {"en":["Sub-parcel's Number"], "fr": ["Numéro de sous-parcelle"], "it": ["Numero di sottoparticella"]},
+            "owner_transcription": {"en": ["Transcription of the parcel(s)' owner(s)"], "fr": ["Transcription du ou des propriétaire(s) de la parcelle"], "it": ["Trascrizione del(i) proprietario(i) della particella"]},
+            "owner_standardised": {"en": ["Standardised description of the parcel(s)' owner(s)"], "fr": ["Description standardisée du ou des propriétaires de la parcelle"], "it": ["Descrizione standardizzata del(i) proprietario(i) della particella"]},
+            "owner_standardised_class": {"en": ["Standardised class of the parcel(s)' owner(s)"], "fr": ["Classe standardisée du ou des propriétaires de la parcelle"], "it": ["Classe standardizzata del(i) proprietario(i) della particella"]},
+            "place": {"en": ["Description of the location"], "fr": ["Description de l'emplacement"], "it": ["Descrizione della posizione"]},
+            "district": {"en": ["District"], "fr": ["District"], "it": ["Distretto"]},
+            "austrian_cadaster_correspondance": {"en": ["Corresponding number in the austrian cadaster"], "fr": ["Numéro correspondant dans le cadastre autrichien"], "it": ["Numero corrispondente nel catasto austriaco"]},
+            "austro_italian_cadaster_correspondance": {"en": ["Corresponding number in the austro-italian cadaster"], "fr": ["Numéro correspondant dans le cadastre austro-italien"], "it": ["Numero corrispondente nel catasto austro-italiano"]},
+            "house_number": {"en": ["Number of the physical door of the building"], "fr": ["Numéro de la porte physique du bâtiment"], "it": ["Numero della porta fisica dell'edificio"]},
+            "ownership_types_en": {"en": ["Type of ownership"], "fr": ["Type de propriété"], "it": ["Tipo di proprietà"]},
+            "qualities_en": {"en": ["Standardized parcel's function(s)"], "fr": ["Fonction(s) standardisée(s) de la parcelle"], "it": ["Funzione(i) standardizzata(e) della particella"]},
+            "parish_standardised": {"en": ["Parish"], "fr": ["Paroisse"], "it": ["Parrocchia"]},
+            "old_entity": {"en": ["Previous owner"], "fr": ["Ancien propriétaire"], "it": ["Proprietario precedente"]},
+            "old_entity_standardised": {"en": ["Previous owner standardised"], "fr": ["Ancien propriétaire standardisé"], "it": ["Proprietario precedente standardizzato"]},
+            "old_entity_standardised_class": {"en": ["Previous owner standardised class"], "fr": ["Classe de l'ancien propriétaire standardisé"], "it": ["Classe del proprietario precedente standardizzato"]},
+            "owner_wd": {"en": ["Wikidata ID of the owner"], "fr": ["ID Wikidata du propriétaire"], "it": ["ID Wikidata del proprietario"]},
+            "owner_type": {"en": ["Type of owner"], "fr": ["Type de propriétaire"], "it": ["Tipo di proprietario"]},
+            "owner_right_of_use_en": {"en": ["Owner's right of use"], "fr": ["Droit d'usage du propriétaire"], "it": ["Diritto di uso del proprietario"]},
+            "old_owner_right_of_use_en": {"en": ["Previous owner's right of use"], "fr": ["Droit d'usage de l'ancien propriétaire"], "it": ["Diritto di uso del proprietario precedente"]},
+            "old_religious_entity_type_en": {"en": ["Type of previous religious entity"], "fr": ["Type d'ancienne entité religieuse"], "it": ["Tipo di precedente ente religioso"]},
+            "owner_supplementary": {"en": ["Supplementary information about the owner"], "fr": ["Informations complémentaires sur le propriétaire"], "it": ["Informazioni supplementari sul proprietario"]},
+            "old_entity_wd": {"en": ["Wikidata ID of the previous owner"], "fr": ["ID Wikidata de l'ancien propriétaire"], "it": ["ID Wikidata del proprietario precedente"]},
+            "citation": {"en": ["Bibliographic reference of the page in the land register"], "fr": ["Référence bibliographique de la page du registre cadastrale"], "it": ["Riferimento bibliografico della pagina del registro"]},
+            "page_number": {"en": ["Reference of the page in the land register"], "fr": ["Référence de la page du registre cadastrale"], "it": ["Riferimento della pagina del registro"]}
+        }
+    }
+}

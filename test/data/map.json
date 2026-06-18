@@ -1,0 +1,102 @@
+{
+ "name": "1808_sommarioni_map",
+ "type_in_file": [
+  "map"
+ ],
+ "creation_time": "2026-04-29T15:24:40.637970",
+ "rde_objects": [
+  {
+   "id": "f231eb4c-5f32-52cb-83b3-adcab99f3878",
+   "name": {
+    "en": [
+     "Digital Facsimile of the Cadastral Map"
+    ],
+    "fr": [
+     "Fac-similé numérique de la carte cadastrale"
+    ],
+    "it": [
+     "Facsimile digitale della mappa catastale"
+    ]
+   },
+   "slug": "venice-1808-map",
+   "start_time": "1808-01-01T00:00:00",
+   "end_time": "1848-12-31T23:59:59",
+   "layers": [
+    "7a23924c-3711-5e81-97c8-e3755a7eea69",
+    "524373ad-2701-5c13-8f4c-b2d1b0cb394a",
+    "2dc0e78c-86ac-5a07-9173-080e81298797"
+   ],
+   "metadata": [
+    {
+     "type": "STRING",
+     "label": {
+      "en": [
+       "Description"
+      ],
+      "fr": [
+       "Description"
+      ],
+      "it": [
+       "Descrizione"
+      ],
+      "nl": [
+       "Beschrijving"
+      ],
+      "de": [
+       "Beschreibung"
+      ]
+     },
+     "value": {
+      "en": [
+       "Digitized version of the cadastral map dated around 1808, commonly referred to as the “Napoleonic Cadaster.” Preserves the original visual structure and toponyms for reference and alignment. Dataset created at EPFL."
+      ],
+      "fr": [
+       "Version numérisée de la carte cadastrale datée vers 1808, communément appelée « Cadastre napoléonien ». Préserve la structure visuelle originale et les toponymes pour référence et alignement. Jeu de données créé à l'EPFL."
+      ],
+      "it": [
+       "Version digitalizzata della mappa catastale datata intorno al 1808, comunemente chiamata « Catasto napoleonico ». Preserva la struttura visiva originale e i toponimi per riferimento e allineamento. Dataset creato all'EPFL."
+      ]
+     }
+    },
+    {
+     "type": "STRING",
+     "label": {
+      "en": [
+       "Paradata"
+      ],
+      "fr": [
+       "Paradata"
+      ],
+      "it": [
+       "Paradata"
+      ],
+      "nl": [
+       "Paradata"
+      ],
+      "de": [
+       "Paradata"
+      ]
+     },
+     "value": {
+      "en": [
+       "The maps were vetcorized into geometries through computer vision techniques and then manually corrected and expanded."
+      ],
+      "fr": [
+       "Les cartes ont été vectorisées en géométries grâce à des techniques de vision par ordinateur, puis corrigées et étendues manuellement."
+      ],
+      "it": [
+       "Le mappe sono state vettorializzate in geometrie attraverso tecniche di visione artificiale e quindi corrette ed espandere"
+      ]
+     }
+    }
+   ],
+   "thumbnail": "https://image-timemachine.epfl.ch/iiif/3/venice%2Flayer_thumbnails%2Fsommarioni_rialto.png/full/max/0/default.jpg",
+   "version": "1.0",
+   "areas": [
+    "ce22c093-3d47-56b8-bf06-0ab86bda0db4",
+    "ae0fb021-bbb4-5de7-bca2-afddad4b9d17"
+   ],
+   "rde_type": "map"
+  }
+ ]
+}
