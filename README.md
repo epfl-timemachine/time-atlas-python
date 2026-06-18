@@ -38,8 +38,6 @@ entity = client.get_single_rde_object('historical-records', 'uuid-here')
   - Maps
   - Layers
   - Areas
-
-- **Entity Caching**: Built-in caching mechanism for improved performance
 - **Type Safety**: Comprehensive type hints and dataclass-based models
 - **Geospatial Integration**: Native support for Shapely geometries
 
