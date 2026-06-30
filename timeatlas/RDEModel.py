@@ -1161,8 +1161,7 @@ class Geometry(RDE, UUIDEntity):
         return cls(
             id=UUIDEntity.parse_uuid(props.get('id', json_obj.get('id'))),
             part_of_layer=UUIDEntity.parse_uuid(part_of_layer) if part_of_layer else None,
-            geometry=shapely.from_geojson(json.dumps(geometry)),
-            force_valid=props.get('force_valid', False),
+            geometry=shapely.from_geojson(json.dumps(geometry))
         )
     
     @classmethod
@@ -1192,7 +1191,7 @@ class Geometry(RDE, UUIDEntity):
         Returns:
             Dictionary representation with geometry as GeoJSON dict
         """
-        result = super().to_dict()
+        result = super().to_dict(exclude_fields={'force_valid'})        
         result['geometry'] = json.loads(shapely.to_geojson(self.geometry))
         return result
 

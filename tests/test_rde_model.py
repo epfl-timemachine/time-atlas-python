@@ -429,6 +429,7 @@ def test_geometry_accepts_dicts_raw_geojson_and_can_repair_invalid_shapes(sample
     assert geometry.id == raw["id"]
     assert geometry.part_of_layer == raw["part_of_layer"]
     assert geometry.to_dict()["geometry"]["type"] == raw["geometry"]["type"]
+    assert "force_valid" not in geometry.to_dict()
     assert from_line.geometry.equals(Point(1, 2))
     assert from_line.part_of_layer == uid(102)
     with pytest.raises(ValueError, match="Invalid geometry"):
