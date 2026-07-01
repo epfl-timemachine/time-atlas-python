@@ -16,8 +16,8 @@ autodoc_mock_imports = []
 project = 'Time Atlas Python'
 copyright = '2026, Time Atlas Contributors'
 author = 'Time Atlas Contributors'
-release = '0.1.0'
-version = '0.1.0'
+release = '0.2.0'
+version = '0.2.0'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
