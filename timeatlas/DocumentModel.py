@@ -372,6 +372,21 @@ class Annotation(UUIDEntity, RDE):
             "body": annotation_array,
             "target": target_array
         }
+    
+    def to_dict(self) -> dict:
+        """Convert annotation to a dictionary representation.
+        
+        Returns:
+            Dictionary containing annotation attributes.
+        """
+        return {
+            "id": self.id,
+            "lang": self.lang,
+            "value": self.value,
+            "hr_id": self.hr_id,
+            "selector": self.selector.__dict__ if self.selector else None,
+            "external_resource": self.external_resource
+        }
 
 @dataclass
 class Page(UUIDEntity, RDE):
@@ -467,6 +482,23 @@ class Page(UUIDEntity, RDE):
             }]
         return obj
     
+    def to_dict(self) -> dict:
+        """Convert page to a dictionary representation.
+        
+        Returns:
+            Dictionary containing page attributes.
+        """
+        return {
+            "id": self.id,
+            "label": self.label.values,
+            "format": self.format,
+            "range_idx": self.range_idx,
+            "height": self.height,
+            "width": self.width,
+            "object_ref": self.object_ref if isinstance(self.object_ref, str) else self.object_ref.path_name,
+            "annotations": [annotation.__dict__ for annotation in self.annotations] if self.annotations else None
+        }
+
 
 @dataclass
 class Model(UUIDEntity, RDE):
@@ -599,6 +631,19 @@ class Document(UUIDEntity, RDE):
                 "type": "Image"
             }] if with_thumbnail else [],
         }
+    
+    def to_dict(self) -> dict:
+        """Convert document to a dictionary representation.
+        
+        Returns:
+            Dictionary containing document attributes and items.
+        """
+        return {
+            "id": self.id,
+            "label": self.label.values,
+            "items": [p.to_dict() if isinstance(p, Page) else p.to_dict() for p in self.items],
+            "structures": self.structures
+        }
 
 @dataclass
 class Collection(UUIDEntity, RDE):
@@ -643,3 +688,17 @@ class Collection(UUIDEntity, RDE):
             "total": len(self.items),
             "metadata": [],
         }
+
+    def to_dict(self) -> dict:
+        """Convert collection to a dictionary representation.
+        
+        Returns:
+            Dictionary containing collection attributes and items.
+        """
+        obj = {
+            "id": self.id,
+            "label": self.label.values,
+            "items": [item.to_dict() for item in self.items],
+            "total": len(self.items),
+        }
+        return obj
