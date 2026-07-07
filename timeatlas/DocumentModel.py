@@ -1,5 +1,5 @@
 from __future__ import annotations # for forward references in type hints, used in the Collection class for items attribute
-from .RDEModel import UUIDEntity, MultiLingualValue, UUIDManager
+from .RDEModel import UUIDEntity, MultiLingualValue, UUIDManager, RDE
 from dataclasses import dataclass
 from typing import Optional
 from collections import OrderedDict
@@ -98,7 +98,7 @@ def url_encoded_iiif_image_url(prefix_url: str, path:str) -> str:
 
 
 @dataclass
-class FileReference(UUIDEntity):
+class FileReference(UUIDEntity, RDE):
     """Reference to a file resource with a unique identifier.
     
     Attributes:
@@ -291,7 +291,7 @@ class Selector():
                 raise ValueError(f'Selector type not recognized: {self.type}')
 
 @dataclass
-class Annotation(UUIDEntity):
+class Annotation(UUIDEntity, RDE):
     """Web Annotation for commenting on or linking resources.
     
     Represents a W3C Web Annotation with optional text content, historical record
@@ -374,7 +374,7 @@ class Annotation(UUIDEntity):
         }
 
 @dataclass
-class Page(UUIDEntity):
+class Page(UUIDEntity, RDE):
     """Represents a page or canvas in an IIIF document.
     
     A page contains an image or other visual resource with dimensions, format,
@@ -469,7 +469,7 @@ class Page(UUIDEntity):
     
 
 @dataclass
-class Model(UUIDEntity):
+class Model(UUIDEntity, RDE):
     """Represents a 3D model resource in IIIF.
     
     Attributes:
@@ -533,7 +533,7 @@ class Model(UUIDEntity):
         return obj
     
 @dataclass
-class Document(UUIDEntity):
+class Document(UUIDEntity, RDE):
     """Represents an IIIF Manifest containing pages or 3D models.
     
     A document is the primary unit for presenting a sequence of canvases/scenes
@@ -601,7 +601,7 @@ class Document(UUIDEntity):
         }
 
 @dataclass
-class Collection(UUIDEntity):
+class Collection(UUIDEntity, RDE):
     """Represents an IIIF Collection containing documents or sub-collections.
     
     Collections provide hierarchical organization of IIIF Manifests and other
