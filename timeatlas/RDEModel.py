@@ -831,11 +831,16 @@ class PointOfInterest(RDE, UUIDEntity):
     
     Attributes:
         id: Universal unique identifier of the POI
-        geometry: GPS coordinates of the POI as a Shapely Point
+        geometry: GPS coordinates of the POI as a Shapely Point, or a (lat, lon) tuple of floats
         height: Elevation information (terrain and building height) in meters
     """
-    geometry: Point
+    geometry: Point | tuple[float, float]
     height: HeightInfo
+
+    def __post_init__(self):
+        super().__post_init__()
+        if isinstance(self.geometry, tuple):
+            self.geometry = Point(self.geometry)
 
     @classmethod
     def constructor_from_json_obj(cls, json_obj: dict) -> Self:
@@ -880,14 +885,19 @@ class Observation(RDE, UUIDEntity):
     Attributes:
         id: Universal unique identifier of the observation
         historical_record: Reference to the HR that attests to this observation's existence
-        geometry: GPS coordinates of the observation as a Shapely Point
+        geometry: GPS coordinates of the observation as a Shapely Point, or a (lat, lon) tuple of floats
         has_geometries: List of geometry entities tied to this observation
         part_of_point_of_interest: Optional reference to the associated POI
     """
     historical_record: HRReference
-    geometry: Point
+    geometry: Point | tuple[float, float]
     has_geometries: list[GeometryReference] = field(default_factory=list)
     part_of_point_of_interest: Optional[POIReference] = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        if isinstance(self.geometry, tuple):
+            self.geometry = Point(self.geometry)
 
     def actualize_references(self, entity_list: dict[UUID, RDE]) -> None:
         """Replace UUID references with actual RDE objects.

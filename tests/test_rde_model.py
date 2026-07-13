@@ -272,7 +272,7 @@ def test_historical_record_constructors_reference_actualization_and_flattening()
     observation = Observation(
         id=uid(52),
         historical_record=uid(51),
-        geometry=Point(0, 0),
+        geometry=(0, 0),
     )
     raw = {
         "id": f"https://example.test/hr/{uid(51)}",
@@ -380,6 +380,9 @@ def test_point_of_interest_supports_flat_and_geojson_feature_shapes():
         assert point.to_dict()["geometry"]["type"] == "Point"
         assert point.to_dict()["terrain_height"] == 12
 
+    tuple_poi = PointOfInterest(id=uid(70), geometry=(7, 46), height=HeightInfo(12, 3))
+    assert tuple_poi.geometry.equals(Point(7, 46))
+
 
 def test_observation_supports_current_and_legacy_historical_record_fields(sample_object):
     raw = sample_object("observations.json")
@@ -402,7 +405,7 @@ def test_observations_from_df_builds_observations_with_optional_geometry_refs():
         {
             "obs_uuid": [uid(83), uid(84), uid(85)],
             "hr_uuid": [uid(86), uid(87), uid(88)],
-            "point": [Point(0, 0), Point(1, 1), Point(2, 2)],
+            "point": [(0, 0), Point(1, 1), Point(2, 2)],
             "geom_uuid": [uid(89), [uid(90), None], None],
         }
     )
