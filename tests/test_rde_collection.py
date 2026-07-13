@@ -14,6 +14,7 @@ from timeatlas import (
     Observation,
     RDE,
     RDECollection,
+    RDEEnvelopeWriter,
 )
 from timeatlas.TimeAtlas import _ShapelyEncoder
 
@@ -105,6 +106,59 @@ def test_collection_save_filters_types_and_skips_unknown_rdes(tmp_path, entity_g
         "historical_records.json",
         "observations.json",
     }
+
+
+def test_envelope_writer_writes_dicts_and_rdes(tmp_path, entity_graph):
+    writer = RDEEnvelopeWriter(tmp_path)
+    path = writer.write(
+        "mixed",
+        [entity_graph["geometry"], entity_graph["dataset"].to_dict()],
+        "mixed_name",
+        ["geom", "dataset"],
+    )
+
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    assert envelope["name"] == "mixed_name"
+    assert envelope["type_in_file"] == ["geom", "dataset"]
+    assert envelope["rde_objects"][0]["geometry"]["type"] == "Polygon"
+    assert envelope["rde_objects"][1]["id"] == entity_graph["dataset"].id
+
+
+def test_envelope_writer_streams_iterables(tmp_path, entity_graph):
+    writer = RDEEnvelopeWriter(tmp_path)
+    path = writer.write_stream(
+        "geometries",
+        (copy.deepcopy(entity_graph["geometry"]) for _ in range(2)),
+        "geometries",
+        "geom",
+    )
+
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    assert envelope["type_in_file"] == ["geom"]
+    assert len(envelope["rde_objects"]) == 2
+
+
+def test_envelope_writer_batches_by_estimated_json_size(tmp_path, entity_graph):
+    writer = RDEEnvelopeWriter(tmp_path)
+    objects = []
+    for index in range(6):
+        geom = copy.deepcopy(entity_graph["geometry"])
+        geom.id = uid(200 + index)
+        objects.append(geom)
+
+    paths = writer.write_batches_by_size(
+        "geometries_batch",
+        objects,
+        "demo_geometries_batch",
+        "geom",
+        max_size_bytes=450,
+        start_index=0,
+    )
+
+    assert len(paths) > 1
+    assert paths[0].name == "geometries_batch_0.json"
+    assert paths[1].name == "geometries_batch_1.json"
+    assert json.loads(paths[0].read_text(encoding="utf-8"))["name"] == "demo_geometries_batch_0"
 
 
 def test_collection_read_ignores_non_json_unknown_and_empty_envelopes(tmp_path):
@@ -217,3 +271,24 @@ def test_collection_validation_ignores_boolean_unresolved_poi_flag(entity_graph)
         item for item in entity_graph["all"] if item is not entity_graph["point_of_interest"]
     ]
     assert RDECollection(without_poi).validate_data() is True
+
+
+def test_collection_validation_raw_mode_accepts_legacy_null_geometries(entity_graph):
+    entity_graph["observation"].has_geometries = None
+
+    with pytest.raises(ValueError, match="has_geometries is null"):
+        RDECollection(entity_graph["all"]).validate_data()
+
+    assert RDECollection(entity_graph["all"]).validate_data(mode="raw") is True
+
+
+def test_collection_validation_can_allow_unresolved_poi_refs(entity_graph):
+    entity_graph["observation"].part_of_point_of_interest = uid(500)
+    without_poi = [
+        item for item in entity_graph["all"] if item is not entity_graph["point_of_interest"]
+    ]
+
+    with pytest.raises(ValueError, match="references missing PointOfInterest"):
+        RDECollection(without_poi).validate_data()
+
+    assert RDECollection(without_poi).validate_data(allow_unresolved_poi=True) is True

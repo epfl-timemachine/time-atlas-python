@@ -4,7 +4,7 @@ import uuid
 import pandas as pd
 import pytest
 import shapely
-from shapely.geometry import Point, Polygon
+from shapely.geometry import MultiPolygon, Point, Polygon
 
 from timeatlas import (
     Area,
@@ -33,6 +33,7 @@ from timeatlas import (
     UUIDEntity,
     UUIDManager,
 )
+from timeatlas.production import csv_seed, normalize_to_epsg4326
 
 
 def uid(value: int) -> str:
@@ -312,6 +313,53 @@ def test_historical_record_constructor_from_dataframe_row():
     assert record.metadata == {"owner": "Grace"}
 
 
+def test_historical_records_from_df_builds_records_and_cleans_metadata():
+    dataframe = pd.DataFrame(
+        {
+            "hr_uuid": [uid(62), uid(63)],
+            "obs_uuid": [uid(64), [uid(65), None]],
+            "title": ["First", "Second"],
+            "tags": [("a", "b"), None],
+        }
+    )
+    records = HistoricalRecord.historical_records_from_df(
+        dataframe,
+        id_col="hr_uuid",
+        obs_col="obs_uuid",
+        dataset_id=uid(61),
+        time_range=RDETimeRange("1900-01-01", "1900-12-31"),
+        metadata_cols=["title", "tags"],
+    )
+
+    assert [record.id for record in records] == [uid(62), uid(63)]
+    assert records[0].has_observations == [uid(64)]
+    assert records[1].has_observations == [uid(65)]
+    assert records[0].metadata == {"title": "First", "tags": ["a", "b"]}
+    assert records[1].metadata == {"title": "Second", "tags": None}
+
+
+def test_historical_records_from_df_accepts_row_time_range_callable():
+    dataframe = pd.DataFrame(
+        {
+            "hr_uuid": [uid(66)],
+            "obs_uuid": [uid(67)],
+            "start_time": ["1901-01-01"],
+            "end_time": ["1901-12-31"],
+            "title": ["Timed"],
+        }
+    )
+    records = HistoricalRecord.historical_records_from_df(
+        dataframe,
+        id_col="hr_uuid",
+        obs_col="obs_uuid",
+        dataset_id=uid(61),
+        time_range=lambda row: (row["start_time"], row["end_time"]),
+        metadata_cols=["title"],
+    )
+
+    assert records[0].time_range == RDETimeRange("1901-01-01", "1901-12-31")
+
+
 def test_point_of_interest_supports_flat_and_geojson_feature_shapes():
     flat = {
         "id": uid(70),
@@ -347,6 +395,30 @@ def test_observation_supports_current_and_legacy_historical_record_fields(sample
     assert observation.historical_record == raw["historical_record"]
     assert observation.to_dict()["geometry"]["type"] == "Point"
     assert legacy.historical_record == uid(82)
+
+
+def test_observations_from_df_builds_observations_with_optional_geometry_refs():
+    dataframe = pd.DataFrame(
+        {
+            "obs_uuid": [uid(83), uid(84), uid(85)],
+            "hr_uuid": [uid(86), uid(87), uid(88)],
+            "point": [Point(0, 0), Point(1, 1), Point(2, 2)],
+            "geom_uuid": [uid(89), [uid(90), None], None],
+        }
+    )
+    observations = Observation.observations_from_df(
+        dataframe,
+        id_col="obs_uuid",
+        hr_col="hr_uuid",
+        geometry_col="point",
+        has_geometries_col="geom_uuid",
+    )
+
+    assert [observation.id for observation in observations] == [uid(83), uid(84), uid(85)]
+    assert observations[0].has_geometries == [uid(89)]
+    assert observations[1].has_geometries == [uid(90)]
+    assert observations[2].has_geometries == []
+    assert all(observation.part_of_point_of_interest is True for observation in observations)
 
 
 def test_observation_actualizes_all_reference_types(entity_graph):
@@ -436,6 +508,78 @@ def test_geometry_accepts_dicts_raw_geojson_and_can_repair_invalid_shapes(sample
         Geometry(id=uid(103), geometry=invalid)
     repaired = Geometry(id=uid(104), geometry=invalid, force_valid=True)
     assert repaired.geometry.is_valid
+
+
+def test_geometries_from_gdf_uses_csv_seed_ids_and_repairs_invalid_shapes():
+    manager = UUIDManager("https://example.test/builder")
+    invalid = Polygon([(0, 0), (1, 1), (1, 0), (0, 1), (0, 0)])
+    dataframe = pd.DataFrame(
+        {
+            "source_id": ["a", "b"],
+            "geometry": [Point(0, 0), invalid],
+        }
+    )
+    geometries = Geometry.geometries_from_gdf(
+        dataframe,
+        id_seed_cols=["source_id"],
+        layer_uuid=uid(105),
+        uuid_manager=manager,
+    )
+
+    expected_ids = [
+        manager._generate_uuid(csv_seed(row, ["source_id"]))
+        for _, row in dataframe.iterrows()
+    ]
+    assert [geometry.id for geometry in geometries] == expected_ids
+    assert [geometry.part_of_layer for geometry in geometries] == [uid(105), uid(105)]
+    assert all(geometry.geometry.is_valid for geometry in geometries)
+
+
+def test_geometry_representative_point_inside_prefers_safe_surface_points():
+    concave = Polygon([(0, 0), (4, 0), (4, 1), (1, 1), (1, 4), (0, 4), (0, 0)])
+    multipolygon = MultiPolygon(
+        [
+            Polygon([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]),
+            Polygon([(10, 0), (11, 0), (11, 1), (10, 1), (10, 0)]),
+        ]
+    )
+
+    concave_point = Geometry.representative_point_inside(concave)
+    multipolygon_point = Geometry.representative_point_inside(multipolygon)
+
+    assert concave.covers(concave_point)
+    assert not concave.covers(concave.centroid)
+    assert multipolygon.covers(multipolygon_point)
+    assert Geometry.representative_point_inside(None) is None
+
+
+def test_normalize_to_epsg4326_uses_geodataframe_protocol():
+    class GeoFrameLike:
+        def __init__(self, crs=None):
+            self.crs = crs
+            self.calls = []
+
+        def set_crs(self, crs, allow_override=False):
+            self.calls.append(("set_crs", crs, allow_override))
+            self.crs = crs
+            return self
+
+        def to_crs(self, crs):
+            self.calls.append(("to_crs", crs))
+            self.crs = crs
+            return self
+
+    frame = GeoFrameLike()
+    normalized = normalize_to_epsg4326(frame, source_crs="EPSG:2056")
+
+    assert normalized is frame
+    assert frame.calls == [
+        ("set_crs", "EPSG:2056", False),
+        ("to_crs", "EPSG:4326"),
+    ]
+
+    with pytest.raises(ValueError, match="has no CRS"):
+        normalize_to_epsg4326(GeoFrameLike())
 
 
 def test_geometry_rejects_invalid_uuid_even_with_custom_post_init():

@@ -33,6 +33,7 @@ The Time Atlas Python library provides:
   Observations, Points of Interest, Geometries, Datasets, Maps, Layers, and Areas)
 * **IIIF document model**: Builds manifests, canvases, 3D scenes, annotations, and collections
 * **RDE collection tools**: Validates related entities and serializes ingestion-ready JSON files
+* **Dataset production helpers**: Provides deterministic UUID seeds, metadata cleaning, date parsing, and configuration context loading
 * **Type Safety**: Comprehensive type hints and dataclass-based models for all RDEs
 
 Installation

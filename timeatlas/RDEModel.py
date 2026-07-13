@@ -4,13 +4,37 @@ import uuid
 from shapely.geometry import Point, LineString, Polygon, MultiLineString, MultiPolygon
 import shapely
 import json
-from typing import Optional, Self
+from typing import Callable, Optional, Self
 from datetime import datetime
 import numpy as np
 import pandas as pd
 
 from .TAEnums import *
 from .helpers import _get_area_uuids, _datetime_from_int, _get_likely_type, _python_type_to_metadata_type
+from .production import clean_metadata, csv_seed
+
+
+def _is_missing_value(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, (list, tuple, set, dict, np.ndarray, pd.Series)):
+        return False
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _as_reference_list(value) -> list:
+    if _is_missing_value(value):
+        return []
+    if isinstance(value, (np.ndarray, pd.Series)):
+        values = value.tolist()
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        values = [value]
+    return [item for item in values if not _is_missing_value(item)]
 
 # Type aliases for improved code readability and type hints
 type GeometryType = Point | LineString | Polygon | MultiLineString | MultiPolygon
@@ -743,6 +767,43 @@ class HistoricalRecord(RDE, UUIDEntity):
             rights_attribution=row.get('rights_attribution')
         )
 
+    @staticmethod
+    def historical_records_from_df(
+        df: pd.DataFrame,
+        id_col: str,
+        obs_col: str,
+        dataset_id: DatasetReference,
+        time_range: RDETimeRange | tuple[str, str] | Callable[[pd.Series], RDETimeRange | tuple[str, str]],
+        metadata_cols: list[str],
+        paradata: ParadataValues | str = "m",
+    ) -> list["HistoricalRecord"]:
+        """Build HistoricalRecord entities from a DataFrame.
+
+        The dataframe must already contain deterministic HistoricalRecord and
+        Observation identifiers. ``obs_col`` can contain either a single
+        observation reference or a list-like collection of references.
+        """
+
+        def resolve_time_range(row: pd.Series) -> RDETimeRange:
+            row_time_range = time_range(row) if callable(time_range) else time_range
+            if isinstance(row_time_range, RDETimeRange):
+                return row_time_range
+            if isinstance(row_time_range, tuple) and len(row_time_range) == 2:
+                return RDETimeRange(row_time_range[0], row_time_range[1])
+            raise ValueError("time_range must be an RDETimeRange, a (start, end) tuple, or a callable")
+
+        return [
+            HistoricalRecord(
+                id=row[id_col],
+                dataset=dataset_id,
+                time_range=resolve_time_range(row),
+                paradata=paradata,
+                has_observations=_as_reference_list(row[obs_col]),
+                metadata=clean_metadata({col: row[col] for col in metadata_cols}),
+            )
+            for _, row in df.iterrows()
+        ]
+
 @dataclass
 class HeightInfo:
     """Elevation information for Points of Interest.
@@ -867,6 +928,34 @@ class Observation(RDE, UUIDEntity):
             # ),
             part_of_point_of_interest=json_obj.get('part_of_point_of_interest', None)
         )
+
+    @staticmethod
+    def observations_from_df(
+        df: pd.DataFrame,
+        id_col: str,
+        hr_col: str,
+        geometry_col: str,
+        has_geometries_col: Optional[str] = None,
+        unresolved_poi: bool | POIReference = True,
+    ) -> list["Observation"]:
+        """Build Observation entities from a DataFrame.
+
+        ``has_geometries_col`` can hold a single geometry reference, a list-like
+        collection of references, or missing values.
+        """
+
+        return [
+            Observation(
+                id=row[id_col],
+                historical_record=row[hr_col],
+                geometry=row[geometry_col],
+                has_geometries=_as_reference_list(row[has_geometries_col])
+                if has_geometries_col
+                else [],
+                part_of_point_of_interest=unresolved_poi,
+            )
+            for _, row in df.iterrows()
+        ]
 
     def to_dict(self) -> dict:
         result = super().to_dict()
@@ -1139,6 +1228,65 @@ class Geometry(RDE, UUIDEntity):
             if not self.force_valid:
                 raise ValueError(f'Invalid geometry, because  {shapely.is_valid_reason(self.geometry)}')
             self.geometry = shapely.make_valid(self.geometry)
+
+    @staticmethod
+    def geometries_from_gdf(
+        gdf: pd.DataFrame,
+        id_seed_cols: list[str],
+        layer_uuid: Optional[LayerReference],
+        force_valid: bool = True,
+        *,
+        uuid_manager: UUIDManager,
+        geometry_col: str = "geometry",
+        seed_suffix: str = "",
+    ) -> list["Geometry"]:
+        """Build Geometry entities from a GeoDataFrame-like object.
+
+        UUIDs are generated with the same CSV row-seed strategy used by the
+        dataset production scripts, preserving deterministic legacy IDs.
+        """
+        return [
+            Geometry(
+                id=uuid_manager._generate_uuid(csv_seed(row, id_seed_cols, seed_suffix)),
+                geometry=row[geometry_col],
+                part_of_layer=layer_uuid,
+                force_valid=force_valid,
+            )
+            for _, row in gdf.iterrows()
+        ]
+
+    @staticmethod
+    def representative_point_inside(geometry: GeometryType) -> Optional[Point]:
+        """Return a stable point on or inside a geometry.
+
+        The centroid is preferred when it already falls on the geometry. For
+        concave polygons or multi-polygons whose centroid falls outside the
+        surface, Shapely's representative point is used as a safe fallback.
+        """
+        if geometry is None:
+            return None
+        if isinstance(geometry, dict):
+            geometry = shapely.from_geojson(json.dumps(geometry))
+        if geometry.is_empty:
+            return None
+        if not geometry.is_valid:
+            geometry = shapely.make_valid(geometry)
+
+        centroid = geometry.centroid
+        if geometry.covers(centroid):
+            return centroid
+        if isinstance(geometry, MultiPolygon):
+            closest_polygon = min(
+                geometry.geoms,
+                key=lambda polygon: polygon.distance(centroid),
+            )
+            polygon_centroid = closest_polygon.centroid
+            return (
+                polygon_centroid
+                if closest_polygon.covers(polygon_centroid)
+                else closest_polygon.representative_point()
+            )
+        return geometry.representative_point()
 
     @classmethod
     def constructor_from_json_obj(cls, json_obj: dict) -> Self:

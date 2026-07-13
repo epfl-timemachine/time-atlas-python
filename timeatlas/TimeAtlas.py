@@ -4,6 +4,8 @@ import pickle
 import shapely
 from collections import Counter
 from datetime import datetime
+from pathlib import Path
+from typing import Iterable
 from .RDEModel import *
 import requests
 import pandas as pd
@@ -185,6 +187,215 @@ class _ShapelyEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
+class RDEEnvelopeWriter:
+    """Write TimeAtlas RDE ingestion envelopes.
+
+    The writer accepts either concrete RDE model instances or already-serialized
+    dictionaries.  It can write a regular envelope, stream an iterable directly
+    to disk, or split a large iterable into several envelopes by estimated JSON
+    byte size.
+    """
+
+    def __init__(
+        self,
+        output_dir: str | os.PathLike = '.',
+        overwrite: bool = True,
+        indent: int | None = 1,
+    ):
+        self.output_dir = Path(output_dir)
+        self.overwrite = overwrite
+        self.indent = indent
+
+    @staticmethod
+    def serialize_object(obj: RDE | dict) -> dict:
+        """Return a JSON-compatible dictionary for one RDE object."""
+        if isinstance(obj, dict):
+            raw = obj
+        elif hasattr(obj, 'to_dict'):
+            raw = obj.to_dict()
+        else:
+            raise TypeError(f'Unsupported RDE envelope object type: {type(obj)}')
+        return json.loads(json.dumps(raw, cls=_ShapelyEncoder, ensure_ascii=False))
+
+    @staticmethod
+    def normalize_type_in_file(rde_type: str | Iterable[str]) -> list[str]:
+        """Normalize an RDE type label or labels to the envelope list form."""
+        if isinstance(rde_type, str):
+            return [rde_type]
+        return list(rde_type)
+
+    def _target_path(self, filename: str | os.PathLike) -> Path:
+        path = Path(filename)
+        if path.suffix != '.json':
+            path = path.with_suffix('.json')
+        if not path.is_absolute():
+            path = self.output_dir / path
+        return path
+
+    def _creation_time(self, creation_time: str | None = None) -> str:
+        return creation_time if creation_time is not None else datetime.now().isoformat()
+
+    def _envelope(
+        self,
+        objects: list[dict],
+        name: str,
+        rde_type: str | Iterable[str],
+        creation_time: str | None = None,
+    ) -> dict:
+        return {
+            'name': name,
+            'type_in_file': self.normalize_type_in_file(rde_type),
+            'creation_time': self._creation_time(creation_time),
+            'rde_objects': objects,
+        }
+
+    def write(
+        self,
+        filename: str | os.PathLike,
+        objects: Iterable[RDE | dict],
+        name: str | None,
+        rde_type: str | Iterable[str],
+        *,
+        overwrite: bool | None = None,
+        creation_time: str | None = None,
+        skip_if_unchanged: bool = False,
+    ) -> Path:
+        """Write one RDE envelope and return its path.
+
+        When ``skip_if_unchanged`` is enabled, the destination file is left
+        untouched if its existing ``rde_objects`` payload is identical to the
+        payload about to be written.
+        """
+        path = self._target_path(filename)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        should_overwrite = self.overwrite if overwrite is None else overwrite
+        serialized = [self.serialize_object(obj) for obj in objects]
+
+        if not should_overwrite and path.exists() and skip_if_unchanged:
+            with path.open('r', encoding='utf-8') as f:
+                existing = json.load(f)
+            if existing.get('rde_objects') == serialized:
+                return path
+
+        if path.exists() and not should_overwrite and not skip_if_unchanged:
+            raise FileExistsError(f'{path} already exists')
+
+        envelope_name = name if name is not None else path.stem
+        envelope = self._envelope(serialized, envelope_name, rde_type, creation_time)
+        with path.open('w', encoding='utf-8') as f:
+            json.dump(envelope, f, indent=self.indent, ensure_ascii=False)
+        return path
+
+    def write_stream(
+        self,
+        filename: str | os.PathLike,
+        objects: Iterable[RDE | dict],
+        name: str | None,
+        rde_type: str | Iterable[str],
+        *,
+        overwrite: bool | None = None,
+        creation_time: str | None = None,
+    ) -> Path:
+        """Write one RDE envelope while consuming ``objects`` incrementally."""
+        path = self._target_path(filename)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        should_overwrite = self.overwrite if overwrite is None else overwrite
+        if path.exists() and not should_overwrite:
+            raise FileExistsError(f'{path} already exists')
+
+        envelope_name = name if name is not None else path.stem
+        type_in_file = self.normalize_type_in_file(rde_type)
+        with path.open('w', encoding='utf-8') as f:
+            f.write('{\n')
+            f.write(f' "name": {json.dumps(envelope_name, ensure_ascii=False)},\n')
+            f.write(f' "type_in_file": {json.dumps(type_in_file, ensure_ascii=False)},\n')
+            f.write(
+                f' "creation_time": {json.dumps(self._creation_time(creation_time), ensure_ascii=False)},\n'
+            )
+            f.write(' "rde_objects": [')
+            first = True
+            for obj in objects:
+                if first:
+                    f.write('\n')
+                    first = False
+                else:
+                    f.write(',\n')
+                f.write(json.dumps(self.serialize_object(obj), ensure_ascii=False, cls=_ShapelyEncoder))
+            if not first:
+                f.write('\n')
+            f.write(' ]\n}')
+        return path
+
+    def write_batches_by_size(
+        self,
+        filename_prefix: str,
+        objects: Iterable[RDE | dict],
+        name_prefix: str | None,
+        rde_type: str | Iterable[str],
+        max_size_bytes: int,
+        *,
+        start_index: int = 1,
+        overwrite: bool | None = None,
+        creation_time: str | None = None,
+    ) -> list[Path]:
+        """Write several envelopes, flushing each batch near ``max_size_bytes``.
+
+        The byte size is estimated from the serialized JSON payload plus the
+        envelope overhead.  Objects larger than the threshold are still written,
+        one per file.
+        """
+        if max_size_bytes <= 0:
+            raise ValueError('max_size_bytes must be greater than 0')
+
+        paths: list[Path] = []
+        batch: list[dict] = []
+        batch_bytes = 0
+        index = start_index
+
+        def batch_filename(batch_index: int) -> str:
+            return f'{filename_prefix}_{batch_index}'
+
+        def batch_name(batch_index: int) -> str:
+            prefix = name_prefix if name_prefix is not None else filename_prefix
+            return f'{prefix}_{batch_index}'
+
+        def envelope_overhead_size(batch_index: int) -> int:
+            envelope = self._envelope([], batch_name(batch_index), rde_type, creation_time)
+            return len(json.dumps(envelope, ensure_ascii=False, cls=_ShapelyEncoder).encode('utf-8'))
+
+        overhead = envelope_overhead_size(index)
+
+        def flush() -> None:
+            nonlocal batch, batch_bytes, index, overhead
+            if not batch:
+                return
+            paths.append(
+                self.write(
+                    batch_filename(index),
+                    batch,
+                    batch_name(index),
+                    rde_type,
+                    overwrite=overwrite,
+                    creation_time=creation_time,
+                )
+            )
+            batch = []
+            batch_bytes = 0
+            index += 1
+            overhead = envelope_overhead_size(index)
+
+        for obj in objects:
+            serialized = self.serialize_object(obj)
+            serialized_size = len(json.dumps(serialized, ensure_ascii=False).encode('utf-8')) + 2
+            if batch and overhead + batch_bytes + serialized_size > max_size_bytes:
+                flush()
+            batch.append(serialized)
+            batch_bytes += serialized_size
+
+        flush()
+        return paths
+
+
 class RDECollection:
     """A collection of Research Data Entities (RDE) ready for file-based serialization.
 
@@ -287,9 +498,7 @@ class RDECollection:
 
             # Produce fully-decoded dicts (Shapely geometries → GeoJSON) so the
             # result is directly comparable to what was previously saved on disk.
-            serialized: list[dict] = json.loads(
-                json.dumps([rde.to_dict() for rde in rde_group], cls=_ShapelyEncoder, ensure_ascii=False)
-            )
+            serialized = [RDEEnvelopeWriter.serialize_object(rde) for rde in rde_group]
 
             if not overwrite and os.path.exists(filepath):
                 with open(filepath, 'r', encoding='utf-8') as f:
@@ -297,14 +506,13 @@ class RDECollection:
                 if existing.get('rde_objects') == serialized:
                     continue
 
-            envelope = {
-                'name': filename,
-                'type_in_file': [type_label],
-                'creation_time': datetime.now().isoformat(),
-                'rde_objects': serialized,
-            }
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(envelope, f, indent=1, ensure_ascii=False)
+            RDEEnvelopeWriter(output_dir, overwrite=True).write(
+                filename,
+                serialized,
+                filename,
+                type_label,
+                overwrite=True,
+            )
 
     @classmethod
     def read_rde_from_files(cls, input_dir: str) -> 'RDECollection':
@@ -354,7 +562,13 @@ class RDECollection:
         # TODO: decide wether useful or not.
         pass
 
-    def validate_data(self) -> bool:
+    def validate_data(
+        self,
+        mode: str = 'strict',
+        *,
+        allow_null_has_geometries: bool = False,
+        allow_unresolved_poi: bool = False,
+    ) -> bool:
         """Validate the internal consistency of all RDE entities in the collection.
 
         Performs three categories of checks:
@@ -388,6 +602,10 @@ class RDECollection:
            * ``Dataset.has_areas``
            * ``Map.areas``
 
+        ``mode='strict'`` keeps the default validation rules. ``mode='raw'`` is
+        intended for legacy/raw producers and enables both
+        ``allow_null_has_geometries`` and ``allow_unresolved_poi``.
+
         Sets :attr:`_valid_data` to ``True`` when all checks pass.  Any failure
         raises a :exc:`ValueError` listing every detected problem.
 
@@ -398,6 +616,12 @@ class RDECollection:
             ValueError: If one or more validation checks fail.  The exception
                 message lists every individual problem found.
         """
+        if mode not in {'strict', 'raw'}:
+            raise ValueError("mode must be either 'strict' or 'raw'")
+        if mode == 'raw':
+            allow_null_has_geometries = True
+            allow_unresolved_poi = True
+
         errors: list[str] = []
 
         def resolve_ref(ref) -> str | None:
@@ -439,6 +663,13 @@ class RDECollection:
                             f'HistoricalRecord {rde.id}: duplicate UUIDs in has_observations: {dups}'
                         )
                 case Observation():
+                    if rde.has_geometries is None:
+                        if allow_null_has_geometries:
+                            continue
+                        errors.append(
+                            f'Observation {rde.id}: has_geometries is null'
+                        )
+                        continue
                     refs = [resolve_ref(r) for r in rde.has_geometries]
                     dups = {r for r, c in Counter(refs).items() if c > 1}
                     if dups:
@@ -479,10 +710,18 @@ class RDECollection:
                         )
                     # part_of_point_of_interest may be bool (unresolved flag) — resolve_ref returns None for it
                     poi_id = resolve_ref(rde.part_of_point_of_interest)
+                    if (
+                        poi_id
+                        and poi_id not in uuid_index
+                        and allow_unresolved_poi
+                    ):
+                        poi_id = None
                     if poi_id and poi_id not in uuid_index:
                         errors.append(
                             f'Observation {rde.id}: references missing PointOfInterest {poi_id}'
                         )
+                    if rde.has_geometries is None:
+                        continue
                     for ref in rde.has_geometries:
                         geom_id = resolve_ref(ref)
                         if geom_id and geom_id not in uuid_index:

@@ -26,6 +26,15 @@ from timeatlas.helpers import (
     _python_type_to_metadata_type,
     _seed,
 )
+from timeatlas.production import (
+    ProductionContext,
+    clean_metadata,
+    csv_seed,
+    datetime_from_int,
+    find_latest_file,
+    find_layer_uuid,
+    get_area_uuids,
+)
 
 
 def test_enum_values_and_compatibility_mappings_are_complete():
@@ -42,6 +51,7 @@ def test_enum_values_and_compatibility_mappings_are_complete():
 def test_seed_matches_legacy_csv_serialization():
     row = pd.Series({"number": 1, "name": "Venice"})
     assert _seed(row, ["number", "name"], suffix="end") == "1\nVenice\nend"
+    assert csv_seed(row, ["number", "name"], suffix="end") == "1\nVenice\nend"
 
 
 def test_get_layer_uuid_requires_exactly_one_match(tmp_path):
@@ -58,6 +68,7 @@ def test_get_layer_uuid_requires_exactly_one_match(tmp_path):
     )
 
     assert _get_layer_uuid(str(path), "parcel") == "parcel"
+    assert find_layer_uuid(str(path), "parcel") == "parcel"
     with pytest.raises(ValueError, match="found 0"):
         _get_layer_uuid(str(path), "missing")
     with pytest.raises(ValueError, match="found 2"):
@@ -72,6 +83,7 @@ def test_get_filepath_like_returns_latest_sorted_recursive_match(tmp_path):
     expected.touch()
 
     assert _get_filepath_like(str(tmp_path / "scan-"), "png") == str(expected)
+    assert find_latest_file(str(tmp_path / "scan-"), "png") == str(expected)
 
 
 def test_clean_metadata_normalizes_collections_and_missing_values():
@@ -94,6 +106,7 @@ def test_clean_metadata_normalizes_collections_and_missing_values():
         "nan_string": None,
         "value": "kept",
     }
+    assert clean_metadata({"nan": np.nan, "tuple": (1, 2)}) == {"nan": None, "tuple": [1, 2]}
 
 
 @pytest.mark.parametrize(
@@ -134,6 +147,7 @@ def test_get_area_uuids_reads_first_rde_from_each_file(tmp_path):
         paths.append(str(path))
 
     assert _get_area_uuids(paths) == ["area-0", "area-1"]
+    assert get_area_uuids(paths) == ["area-0", "area-1"]
 
 
 @pytest.mark.parametrize(
@@ -149,8 +163,31 @@ def test_get_area_uuids_reads_first_rde_from_each_file(tmp_path):
 )
 def test_datetime_from_int(value, match_to_end, expected):
     assert _datetime_from_int(value, match_to_end=match_to_end) == expected
+    assert datetime_from_int(value, match_to_end=match_to_end) == expected
 
 
 def test_datetime_from_int_rejects_unsupported_values():
     with pytest.raises(ValueError, match="Invalid date value"):
         _datetime_from_int("1808-01-01")
+
+
+def test_production_context_derives_common_dataset_values(tmp_path):
+    config_path = tmp_path / "dataproduction_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "UUID_NAMESPACE": "https://timemachine.epfl.ch/test/context",
+                "TIMERANGE_MINIMUM": 18080101,
+                "TIMERANGE_MAXIMUM": 18081231,
+                "DATASET_CONFIGURATION": {"slug": "test-dataset"},
+            }
+        )
+    )
+
+    context = ProductionContext.from_config(config_path)
+
+    assert context.config_path == config_path
+    assert context.dataset_slug == "test-dataset"
+    assert context.dataset_id == context.uuid_manager._generate_uuid("test-dataset")
+    assert context.time_range.start_time == "1808-01-01T00:00:00"
+    assert context.time_range.end_time == "1808-12-31T23:59:59"
