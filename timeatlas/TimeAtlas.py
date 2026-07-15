@@ -241,13 +241,17 @@ class RDEEnvelopeWriter:
         name: str,
         rde_type: str | Iterable[str],
         creation_time: str | None = None,
+        related_dataset_slugs: list[str] | None = None,
     ) -> dict:
-        return {
+        envelope = {
             'name': name,
             'type_in_file': self.normalize_type_in_file(rde_type),
             'creation_time': self._creation_time(creation_time),
-            'rde_objects': objects,
         }
+        if related_dataset_slugs is not None:
+            envelope['related_dataset_slugs'] = related_dataset_slugs
+        envelope['rde_objects'] = objects
+        return envelope
 
     def write(
         self,
@@ -259,6 +263,7 @@ class RDEEnvelopeWriter:
         overwrite: bool | None = None,
         creation_time: str | None = None,
         skip_if_unchanged: bool = False,
+        related_dataset_slugs: list[str] | None = None,
     ) -> Path:
         """Write one RDE envelope and return its path.
 
@@ -281,7 +286,7 @@ class RDEEnvelopeWriter:
             raise FileExistsError(f'{path} already exists')
 
         envelope_name = name if name is not None else path.stem
-        envelope = self._envelope(serialized, envelope_name, rde_type, creation_time)
+        envelope = self._envelope(serialized, envelope_name, rde_type, creation_time, related_dataset_slugs)
         with path.open('w', encoding='utf-8') as f:
             json.dump(envelope, f, indent=self.indent, ensure_ascii=False)
         return path
@@ -295,6 +300,7 @@ class RDEEnvelopeWriter:
         *,
         overwrite: bool | None = None,
         creation_time: str | None = None,
+        related_dataset_slugs: list[str] | None = None,
     ) -> Path:
         """Write one RDE envelope while consuming ``objects`` incrementally."""
         path = self._target_path(filename)
@@ -312,6 +318,10 @@ class RDEEnvelopeWriter:
             f.write(
                 f' "creation_time": {json.dumps(self._creation_time(creation_time), ensure_ascii=False)},\n'
             )
+            if related_dataset_slugs is not None:
+                f.write(
+                    f' "related_dataset_slugs": {json.dumps(related_dataset_slugs, ensure_ascii=False)},\n'
+                )
             f.write(' "rde_objects": [')
             first = True
             for obj in objects:
@@ -337,6 +347,7 @@ class RDEEnvelopeWriter:
         start_index: int = 1,
         overwrite: bool | None = None,
         creation_time: str | None = None,
+        related_dataset_slugs: list[str] | None = None,
     ) -> list[Path]:
         """Write several envelopes, flushing each batch near ``max_size_bytes``.
 
@@ -360,7 +371,7 @@ class RDEEnvelopeWriter:
             return f'{prefix}_{batch_index}'
 
         def envelope_overhead_size(batch_index: int) -> int:
-            envelope = self._envelope([], batch_name(batch_index), rde_type, creation_time)
+            envelope = self._envelope([], batch_name(batch_index), rde_type, creation_time, related_dataset_slugs)
             return len(json.dumps(envelope, ensure_ascii=False, cls=_ShapelyEncoder).encode('utf-8'))
 
         overhead = envelope_overhead_size(index)
@@ -377,6 +388,7 @@ class RDEEnvelopeWriter:
                     rde_type,
                     overwrite=overwrite,
                     creation_time=creation_time,
+                    related_dataset_slugs=related_dataset_slugs,
                 )
             )
             batch = []
@@ -427,6 +439,9 @@ class RDECollection:
     }
     """Mapping from RDE concrete class to (output filename stem, rde_type label)."""
 
+    _DATASET_TIED_TYPES: frozenset[type] = frozenset({HistoricalRecord, Observation, Dataset})
+    """RDE types whose output files carry a ``related_dataset_slugs`` header field."""
+
     def __init__(self, rdes: list[RDE]):
         """Create an RDECollection.
 
@@ -447,7 +462,7 @@ class RDECollection:
         else:
             self.rdes.append(rdes)
 
-    def save_rde_to_files(self, output_dir: str, overwrite: bool = False, rde_types: list[type] | None = None) -> None:
+    def save_rde_to_files(self, output_dir: str, overwrite: bool = False, rde_types: list[type] | None = None, dataset_slug: str | None = None) -> None:
         """Serialize the collection's RDE entities to individual JSON files grouped by type.
 
         For each RDE class present in the collection, one ``.json`` file is written
@@ -477,6 +492,11 @@ class RDECollection:
                         ``[HistoricalRecord, Observation]``).  When ``None``
                         (the default), all types present in the collection are
                         written.
+            dataset_slug: When provided, dataset-tied output files
+                        (``dataset.json``, ``historical_records.json``,
+                        ``observations.json``) will include a
+                        ``related_dataset_slugs`` header field set to
+                        ``[dataset_slug]``.
 
         Raises:
             OSError: If *output_dir* cannot be created or a file cannot be written.
@@ -496,6 +516,9 @@ class RDECollection:
             filename, type_label = self._FILE_MAP[cls]
             filepath = os.path.join(output_dir, f'{filename}.json')
 
+            # Only add related_dataset_slugs for dataset-tied file types
+            slugs = [dataset_slug] if (dataset_slug is not None and cls in self._DATASET_TIED_TYPES) else None
+
             # Produce fully-decoded dicts (Shapely geometries → GeoJSON) so the
             # result is directly comparable to what was previously saved on disk.
             serialized = [RDEEnvelopeWriter.serialize_object(rde) for rde in rde_group]
@@ -512,6 +535,7 @@ class RDECollection:
                 filename,
                 type_label,
                 overwrite=True,
+                related_dataset_slugs=slugs,
             )
 
     @classmethod
