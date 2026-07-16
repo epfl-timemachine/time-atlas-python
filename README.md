@@ -41,6 +41,24 @@ entity = client.get_single_rde_object('historical-records', 'uuid-here')
 - **Type Safety**: Comprehensive type hints and dataclass-based models
 - **Geospatial Integration**: Native support for Shapely geometries
 
+## Producing Points of Interest from observations
+
+`RDECollection` can aggregate every observation that needs a Point of Interest,
+patch the observation references, and serialize the resulting PoIs alongside the
+other dataset files:
+
+```python
+from timeatlas import RDECollection
+
+collection = RDECollection(historical_records + observations + [dataset])
+points_of_interest = collection.consolidate_data()
+collection.save_rde_to_files("output/dataset-slug")
+```
+
+Observations at coordinates that match after rounding to five decimal places share
+a deterministic PoI UUID. Set `part_of_point_of_interest=False` on observations
+that should not produce a PoI.
+
 ## Requirements
 
 - Python 3.12 or higher

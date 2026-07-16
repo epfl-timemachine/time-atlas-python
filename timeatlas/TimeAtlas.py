@@ -2,6 +2,7 @@ import json
 import os
 import pickle
 import shapely
+import uuid
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -442,6 +443,12 @@ class RDECollection:
     _DATASET_TIED_TYPES: frozenset[type] = frozenset({HistoricalRecord, Observation, Dataset})
     """RDE types whose output files carry a ``related_dataset_slugs`` header field."""
 
+    _POI_NAMESPACE = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        'https://timemachine.epfl.ch/operational/pois/',
+    )
+    """Shared namespace used for coordinate-derived Point of Interest UUIDs."""
+
     def __init__(self, rdes: list[RDE]):
         """Create an RDECollection.
 
@@ -496,7 +503,8 @@ class RDECollection:
                         (``dataset.json``, ``historical_records.json``,
                         ``observations.json``) will include a
                         ``related_dataset_slugs`` header field set to
-                        ``[dataset_slug]``.
+                        ``[dataset_slug]``. When omitted and the collection contains
+                        exactly one dataset slug, that slug is inferred automatically.
 
         Raises:
             OSError: If *output_dir* cannot be created or a file cannot be written.
@@ -512,12 +520,25 @@ class RDECollection:
             if cls in self._FILE_MAP and cls in allowed:
                 groups.setdefault(cls, []).append(rde)
 
+        inferred_dataset_slugs = sorted({
+            rde.slug
+            for rde in self.rdes
+            if isinstance(rde, Dataset) and rde.slug
+        })
+        related_dataset_slugs = (
+            [dataset_slug]
+            if dataset_slug is not None
+            else inferred_dataset_slugs
+            if len(inferred_dataset_slugs) == 1
+            else None
+        )
+
         for cls, rde_group in groups.items():
             filename, type_label = self._FILE_MAP[cls]
             filepath = os.path.join(output_dir, f'{filename}.json')
 
             # Only add related_dataset_slugs for dataset-tied file types
-            slugs = [dataset_slug] if (dataset_slug is not None and cls in self._DATASET_TIED_TYPES) else None
+            slugs = related_dataset_slugs if cls in self._DATASET_TIED_TYPES else None
 
             # Produce fully-decoded dicts (Shapely geometries → GeoJSON) so the
             # result is directly comparable to what was previously saved on disk.
@@ -526,7 +547,12 @@ class RDECollection:
             if not overwrite and os.path.exists(filepath):
                 with open(filepath, 'r', encoding='utf-8') as f:
                     existing = json.load(f)
-                if existing.get('rde_objects') == serialized:
+                same_objects = existing.get('rde_objects') == serialized
+                same_related_slugs = (
+                    cls not in self._DATASET_TIED_TYPES
+                    or existing.get('related_dataset_slugs') == slugs
+                )
+                if same_objects and same_related_slugs:
                     continue
 
             RDEEnvelopeWriter(output_dir, overwrite=True).write(
@@ -579,12 +605,118 @@ class RDECollection:
                 rdes.append(rde_class.constructor_from_json_obj(obj))
         return cls(rdes)
 
-    def consolidate_data(self) -> None:
+    def aggregate_observations_into_points_of_interest(
+        self,
+        coordinate_precision: int = 5,
+    ) -> list[PointOfInterest]:
+        """Aggregate collection observations into coordinate-based Points of Interest.
+
+        Every :class:`Observation` whose ``part_of_point_of_interest`` value is not
+        explicitly ``False`` participates in the aggregation.  Coordinates are
+        rounded to *coordinate_precision* decimal places and observations at the
+        same rounded longitude/latitude are assigned the same deterministic UUID.
+        The UUID algorithm and namespace match the legacy ``merge_obs.py`` data
+        production utility.
+
+        The operation mutates the collection: observation references are replaced
+        by the generated UUID strings and the corresponding
+        :class:`PointOfInterest` entities are added to ``rdes``.  Existing PoIs with
+        a generated UUID are reused so their height information is preserved.  PoIs
+        referenced by participating observations under an obsolete UUID are
+        removed, while unrelated PoIs are left untouched.  Observations explicitly
+        marked ``False`` or lacking a geometry receive a ``None`` PoI reference.
+
+        Args:
+            coordinate_precision: Number of decimal places used to aggregate
+                coordinates.  Five decimal places is the legacy default and gives
+                sub-metre grouping precision.
+
+        Returns:
+            The generated or reused Points of Interest, ordered by rounded
+            longitude and latitude.
+
+        Raises:
+            ValueError: If *coordinate_precision* is negative or a participating
+                observation has a non-point geometry.
         """
-        Produce the PoIS and update observations references to them.
+        if coordinate_precision < 0:
+            raise ValueError('coordinate_precision must be greater than or equal to 0')
+
+        observations = [rde for rde in self.rdes if isinstance(rde, Observation)]
+        grouped_observations: dict[tuple[float, float], list[Observation]] = {}
+        replaced_poi_ids: set[str] = set()
+
+        for observation in observations:
+            poi_reference = observation.part_of_point_of_interest
+            if isinstance(poi_reference, PointOfInterest):
+                replaced_poi_ids.add(poi_reference.id)
+            elif isinstance(poi_reference, str):
+                replaced_poi_ids.add(poi_reference)
+
+            if poi_reference is False or observation.geometry is None:
+                observation.part_of_point_of_interest = None
+                continue
+            if not isinstance(observation.geometry, shapely.geometry.Point):
+                raise ValueError(
+                    f'Observation {observation.id} must have a Point geometry to aggregate into a PoI'
+                )
+            if observation.geometry.is_empty:
+                observation.part_of_point_of_interest = None
+                continue
+
+            coordinates = (
+                round(float(observation.geometry.x), coordinate_precision),
+                round(float(observation.geometry.y), coordinate_precision),
+            )
+            grouped_observations.setdefault(coordinates, []).append(observation)
+
+        existing_pois = {
+            rde.id: rde for rde in self.rdes if isinstance(rde, PointOfInterest)
+        }
+        generated_pois: list[PointOfInterest] = []
+
+        for (longitude, latitude), grouped in sorted(grouped_observations.items()):
+            poi_id = str(
+                uuid.uuid5(
+                    self._POI_NAMESPACE,
+                    f'poi_{longitude}_{latitude}',
+                )
+            )
+            poi = existing_pois.get(poi_id)
+            if poi is None:
+                poi = PointOfInterest(
+                    id=poi_id,
+                    geometry=shapely.geometry.Point(longitude, latitude),
+                    height=HeightInfo(),
+                )
+            generated_pois.append(poi)
+            for observation in grouped:
+                observation.part_of_point_of_interest = poi_id
+
+        generated_ids = {poi.id for poi in generated_pois}
+        self.rdes = [
+            rde
+            for rde in self.rdes
+            if not (
+                isinstance(rde, PointOfInterest)
+                and rde.id in replaced_poi_ids
+                and rde.id not in generated_ids
+            )
+        ]
+        current_poi_ids = {
+            rde.id for rde in self.rdes if isinstance(rde, PointOfInterest)
+        }
+        self.rdes.extend(poi for poi in generated_pois if poi.id not in current_poi_ids)
+        self._valid_data = False
+        return generated_pois
+
+    def consolidate_data(self, coordinate_precision: int = 5) -> list[PointOfInterest]:
+        """Produce PoIs and update observation references in this collection.
+
+        This backward-compatible entry point delegates to
+        :meth:`aggregate_observations_into_points_of_interest`.
         """
-        # TODO: decide wether useful or not.
-        pass
+        return self.aggregate_observations_into_points_of_interest(coordinate_precision)
 
     def validate_data(
         self,

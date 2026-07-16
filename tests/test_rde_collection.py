@@ -97,6 +97,36 @@ def test_collection_save_is_idempotent_unless_overwrite_is_requested(
     assert overwritten["creation_time"] == "2021-01-01T00:00:00"
 
 
+def test_collection_save_infers_dataset_slug_for_dataset_tied_files(
+    tmp_path, entity_graph
+):
+    collection = RDECollection(
+        [
+            entity_graph["dataset"],
+            entity_graph["historical_record"],
+            entity_graph["observation"],
+        ]
+    )
+
+    collection.save_rde_to_files(str(tmp_path))
+
+    for filename in ("dataset.json", "historical_records.json", "observations.json"):
+        envelope = json.loads((tmp_path / filename).read_text())
+        assert envelope["related_dataset_slugs"] == ["demo"]
+
+
+def test_collection_save_rewrites_when_only_related_dataset_slugs_change(
+    tmp_path, entity_graph
+):
+    collection = RDECollection([entity_graph["dataset"]])
+    collection.save_rde_to_files(str(tmp_path), dataset_slug="old-slug")
+
+    collection.save_rde_to_files(str(tmp_path), dataset_slug="demo")
+
+    envelope = json.loads((tmp_path / "dataset.json").read_text())
+    assert envelope["related_dataset_slugs"] == ["demo"]
+
+
 def test_collection_save_filters_types_and_skips_unknown_rdes(tmp_path, entity_graph):
     collection = RDECollection(entity_graph["all"] + [RDE()])
     collection.save_rde_to_files(
@@ -181,10 +211,115 @@ def test_collection_read_requires_existing_directory(tmp_path):
         RDECollection.read_rde_from_files(str(tmp_path / "missing"))
 
 
-def test_collection_consolidate_is_currently_a_noop(entity_graph):
-    collection = RDECollection(entity_graph["all"])
-    assert collection.consolidate_data() is None
-    assert collection.rdes == entity_graph["all"]
+def test_collection_consolidates_observations_and_serializes_pois(tmp_path, entity_graph):
+    first = entity_graph["observation"]
+    first.part_of_point_of_interest = True
+    second = copy.deepcopy(first)
+    second.id = uid(30)
+    second.geometry = Point(0.250004, 0.250004)
+    third = copy.deepcopy(first)
+    third.id = uid(31)
+    third.geometry = Point(0.3, 0.4)
+
+    collection = RDECollection(
+        [
+            item
+            for item in entity_graph["all"]
+            if item is not entity_graph["point_of_interest"]
+        ]
+        + [second, third]
+    )
+    pois = collection.consolidate_data()
+
+    expected_first_poi = str(
+        uuid.uuid5(
+            RDECollection._POI_NAMESPACE,
+            "poi_0.25_0.25",
+        )
+    )
+    assert len(pois) == 2
+    assert first.part_of_point_of_interest == expected_first_poi
+    assert second.part_of_point_of_interest == expected_first_poi
+    assert third.part_of_point_of_interest == pois[1].id
+    assert [poi for poi in collection.rdes if type(poi) is type(pois[0])] == pois
+
+    collection.save_rde_to_files(str(tmp_path))
+    saved_pois = json.loads((tmp_path / "points_of_interest.json").read_text())
+    saved_observations = json.loads((tmp_path / "observations.json").read_text())
+    assert len(saved_pois["rde_objects"]) == 2
+    assert {
+        observation["part_of_point_of_interest"]
+        for observation in saved_observations["rde_objects"]
+    } == {expected_first_poi, pois[1].id}
+
+
+def test_collection_consolidation_skips_false_and_missing_geometry(entity_graph):
+    without_poi = copy.deepcopy(entity_graph["observation"])
+    without_poi.id = uid(32)
+    without_poi.part_of_point_of_interest = False
+    without_geometry = copy.deepcopy(entity_graph["observation"])
+    without_geometry.id = uid(33)
+    without_geometry.geometry = None
+
+    collection = RDECollection([without_poi, without_geometry])
+    assert collection.consolidate_data() == []
+    assert without_poi.part_of_point_of_interest is None
+    assert without_geometry.part_of_point_of_interest is None
+
+
+def test_collection_consolidation_is_idempotent_and_preserves_heights(entity_graph):
+    observation = entity_graph["observation"]
+    poi = entity_graph["point_of_interest"]
+    poi.id = str(uuid.uuid5(RDECollection._POI_NAMESPACE, "poi_0.25_0.25"))
+    observation.part_of_point_of_interest = poi
+    collection = RDECollection([observation, poi])
+
+    first_result = collection.consolidate_data()
+    second_result = collection.consolidate_data()
+
+    assert first_result == [poi]
+    assert second_result == [poi]
+    assert poi.height.terrain == 10.0
+    assert len([item for item in collection.rdes if type(item) is type(poi)]) == 1
+
+
+def test_collection_consolidation_replaces_obsolete_poi_and_keeps_unrelated_one(
+    entity_graph,
+):
+    observation = entity_graph["observation"]
+    obsolete_poi = entity_graph["point_of_interest"]
+    unrelated_poi = copy.deepcopy(obsolete_poi)
+    unrelated_poi.id = uid(34)
+    observation.part_of_point_of_interest = obsolete_poi.id
+    collection = RDECollection([observation, obsolete_poi, unrelated_poi])
+
+    generated = collection.consolidate_data()
+    collection_poi_ids = {
+        item.id for item in collection.rdes if type(item) is type(obsolete_poi)
+    }
+
+    assert generated[0].id in collection_poi_ids
+    assert obsolete_poi.id not in collection_poi_ids
+    assert unrelated_poi.id in collection_poi_ids
+
+
+def test_collection_consolidation_skips_empty_point(entity_graph):
+    observation = entity_graph["observation"]
+    observation.geometry = Point()
+    collection = RDECollection([observation])
+
+    assert collection.consolidate_data() == []
+    assert observation.part_of_point_of_interest is None
+
+
+def test_collection_consolidation_rejects_invalid_inputs(entity_graph):
+    collection = RDECollection([entity_graph["observation"]])
+    with pytest.raises(ValueError, match="coordinate_precision"):
+        collection.consolidate_data(-1)
+
+    entity_graph["observation"].geometry = entity_graph["geometry"].geometry
+    with pytest.raises(ValueError, match="must have a Point geometry"):
+        collection.consolidate_data()
 
 
 def test_collection_validation_accepts_complete_graph_and_marks_it_valid(entity_graph):
