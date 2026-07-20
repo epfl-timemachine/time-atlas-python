@@ -115,6 +115,16 @@ def test_collection_save_infers_dataset_slug_for_dataset_tied_files(
         assert envelope["related_dataset_slugs"] == ["demo"]
 
 
+def test_collection_save_adds_dataset_slug_to_every_resource_file(
+    tmp_path, entity_graph
+):
+    collection = RDECollection(entity_graph["all"])
+    collection.save_rde_to_files(str(tmp_path))
+
+    for path in tmp_path.glob("*.json"):
+        assert json.loads(path.read_text())["related_dataset_slugs"] == ["demo"]
+
+
 def test_collection_save_rewrites_when_only_related_dataset_slugs_change(
     tmp_path, entity_graph
 ):

@@ -136,3 +136,4 @@ Thumbs.db
 # Project-specific
 rde_entity_cache.pkl
 *.pkl
+/test/venice-1857-commercial-directory

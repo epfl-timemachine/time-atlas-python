@@ -59,6 +59,31 @@ Observations at coordinates that match after rounding to five decimal places sha
 a deterministic PoI UUID. Set `part_of_point_of_interest=False` on observations
 that should not produce a PoI.
 
+## Uploading, importing, and publishing a collection
+
+The import client runs the manual server workflow end to end. The collection must
+pass local validation first; the client then serializes it, verifies every upload,
+waits for packaging, checks the server validation report, queues the import, and
+bulk-publishes its resources only after completion.
+
+```python
+from timeatlas import RDECollection, TimeAtlasImportClient
+
+collection = RDECollection(historical_records + observations + points_of_interest + [dataset])
+collection.validate_data()
+
+client = TimeAtlasImportClient(
+    "http://localhost:8000/v1",
+    token="personal-access-token",
+    team_id="team-uuid",
+)
+result = client.run_collection_workflow(collection, "output/dataset-slug")
+print(result.import_data["uuid"], result.import_data["status"])
+```
+
+For local scripts, `TimeAtlasImportClient.from_credentials_file(...)` accepts a
+file with `TOKEN=...` and `TEAM_ID=...` lines.
+
 ## Requirements
 
 - Python 3.12 or higher

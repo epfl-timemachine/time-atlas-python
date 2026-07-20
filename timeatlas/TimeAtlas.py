@@ -108,7 +108,7 @@ class TimeAtlas:
         self.entity_cache.update({hr.id: hr for hr in hrs})
         return hrs
 
-    # Waring: very slow. Waiting on a better API endpoint to retrieve all obs for a dataset
+    # Warning: very slow. Waiting on a better API endpoint to retrieve all obs for a dataset
     def generate_obs_from_list_of_hr(self, hr_list: list[HistoricalRecord]) -> list[Observation]:
         obs_uuids = set()
         for hr in hr_list:
@@ -440,7 +440,7 @@ class RDECollection:
     }
     """Mapping from RDE concrete class to (output filename stem, rde_type label)."""
 
-    _DATASET_TIED_TYPES: frozenset[type] = frozenset({HistoricalRecord, Observation, Dataset})
+    _DATASET_TIED_TYPES: frozenset[type] = frozenset(_FILE_MAP)
     """RDE types whose output files carry a ``related_dataset_slugs`` header field."""
 
     _POI_NAMESPACE = uuid.uuid5(
@@ -457,6 +457,11 @@ class RDECollection:
         """
         self.rdes = rdes
         self._valid_data: bool = False
+
+    @staticmethod
+    def _class_for_name(name: str) -> type:
+        """Resolve a model class without making the import client depend on model internals."""
+        return globals()[name]
 
     def add(self, rdes: list[RDE] | RDE) -> None:
         """Append one or more RDE instances to the collection.
@@ -709,14 +714,6 @@ class RDECollection:
         self.rdes.extend(poi for poi in generated_pois if poi.id not in current_poi_ids)
         self._valid_data = False
         return generated_pois
-
-    def consolidate_data(self, coordinate_precision: int = 5) -> list[PointOfInterest]:
-        """Produce PoIs and update observation references in this collection.
-
-        This backward-compatible entry point delegates to
-        :meth:`aggregate_observations_into_points_of_interest`.
-        """
-        return self.aggregate_observations_into_points_of_interest(coordinate_precision)
 
     def validate_data(
         self,
