@@ -2,12 +2,14 @@ import copy
 import importlib
 import json
 import uuid
+import warnings
 from datetime import datetime
 
 import pytest
-from shapely.geometry import Point
+from shapely.geometry import Point, Polygon
 
 from timeatlas import (
+    Area,
     Geometry,
     HistoricalRecord,
     Map,
@@ -115,14 +117,25 @@ def test_collection_save_infers_dataset_slug_for_dataset_tied_files(
         assert envelope["related_dataset_slugs"] == ["demo"]
 
 
-def test_collection_save_adds_dataset_slug_to_every_resource_file(
+def test_collection_save_adds_dataset_slug_only_to_dataset_scoped_files(
     tmp_path, entity_graph
 ):
     collection = RDECollection(entity_graph["all"])
     collection.save_rde_to_files(str(tmp_path))
 
-    for path in tmp_path.glob("*.json"):
-        assert json.loads(path.read_text())["related_dataset_slugs"] == ["demo"]
+    for filename in (
+        "dataset.json",
+        "historical_records.json",
+        "observations.json",
+        "points_of_interest.json",
+    ):
+        assert json.loads((tmp_path / filename).read_text())["related_dataset_slugs"] == [
+            "demo"
+        ]
+    for filename in ("geometries.json", "maps.json", "layers.json"):
+        assert "related_dataset_slugs" not in json.loads(
+            (tmp_path / filename).read_text()
+        )
 
 
 def test_collection_save_rewrites_when_only_related_dataset_slugs_change(
@@ -334,8 +347,78 @@ def test_collection_consolidation_rejects_invalid_inputs(entity_graph):
 
 def test_collection_validation_accepts_complete_graph_and_marks_it_valid(entity_graph):
     collection = RDECollection(entity_graph["all"])
-    assert collection.validate_data() is True
+    with pytest.warns(UserWarning, match="ad-hoc Area"):
+        assert collection.validate_data() is True
     assert collection._valid_data is True
+    area = next(item for item in collection.rdes if isinstance(item, Area))
+    assert entity_graph["dataset"].has_areas == [area.id]
+    assert area.geometry.equals(
+        Polygon([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
+    )
+
+
+def test_collection_produces_deterministic_padded_area_from_point_extent(entity_graph):
+    collection = RDECollection(
+        [entity_graph["dataset"], entity_graph["observation"]]
+    )
+
+    first = collection.produce_area_from_current_extent()
+    second = collection.produce_area_from_current_extent()
+
+    assert first is second
+    assert first.geometry.geom_type == "Polygon"
+    assert first.geometry.contains(entity_graph["observation"].geometry)
+    assert len([item for item in collection.rdes if isinstance(item, Area)]) == 1
+    assert entity_graph["dataset"].has_areas == [first.id]
+
+
+def test_collection_extent_area_serializes_with_dataset_slug(tmp_path, entity_graph):
+    collection = RDECollection(entity_graph["all"])
+    with pytest.warns(UserWarning, match="ad-hoc Area"):
+        collection.validate_data()
+    collection.save_rde_to_files(str(tmp_path))
+
+    area_envelope = json.loads((tmp_path / "areas.json").read_text())
+    assert "related_dataset_slugs" not in area_envelope
+    assert area_envelope["rde_objects"][0]["id"] == entity_graph["dataset"].has_areas[0]
+
+
+def test_collection_extent_area_requires_spatial_data_and_valid_dataset(entity_graph):
+    collection = RDECollection([entity_graph["dataset"]])
+    with pytest.raises(ValueError, match="no observation or Geometry extent"):
+        collection.produce_area_from_current_extent()
+    with pytest.warns(UserWarning, match="ad-hoc Area"):
+        with pytest.raises(ValueError, match="no observation or Geometry extent"):
+            collection.validate_data()
+
+    with pytest.raises(ValueError, match="must be present"):
+        RDECollection([]).produce_area_from_current_extent(entity_graph["dataset"])
+    with pytest.raises(ValueError, match="exactly one Dataset"):
+        RDECollection([]).produce_area_from_current_extent()
+    with pytest.raises(ValueError, match="padding"):
+        collection.produce_area_from_current_extent(padding=0)
+
+
+def test_collection_validation_warns_for_areas_missing_from_collection(entity_graph):
+    entity_graph["dataset"].has_areas = [uid(120)]
+    with pytest.warns(UserWarning, match="target backend"):
+        assert RDECollection(entity_graph["all"]).validate_data() is True
+
+
+def test_collection_validation_accepts_referenced_area_in_collection(entity_graph):
+    area = Area(
+        id=uid(120),
+        slug="existing-area",
+        name=entity_graph["dataset"].name,
+        geometry=Polygon([(0, 0), (1, 0), (1, 1), (0, 0)]),
+    )
+    entity_graph["dataset"].has_areas = [area.id]
+    collection = RDECollection(entity_graph["all"] + [area])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert collection.validate_data() is True
+    assert [item for item in collection.rdes if isinstance(item, Area)] == [area]
 
 
 def test_collection_validation_accepts_materialized_object_references(entity_graph):

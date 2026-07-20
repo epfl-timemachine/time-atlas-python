@@ -84,6 +84,57 @@ def test_request_retries_throttled_responses(monkeypatch):
     assert value._request("get", "files", {200})["data"]["ok"] is True
 
 
+def test_area_exists_online_uses_non_team_endpoint():
+    value = client([Response(200, {"id": "area"}), Response(404, {"message": "missing"})])
+
+    assert value.area_exists_online("present") is True
+    assert value.area_exists_online("missing") is False
+    assert value.session.calls[0][1] == "https://example.test/v1/areas/present"
+    assert "/teams/" not in value.session.calls[0][1]
+
+    value = client([Response(500, {"message": "broken"})])
+    with pytest.raises(ImportWorkflowError, match="GET areas/id returned HTTP 500"):
+        value.area_exists_online("id")
+
+
+def test_area_preflight_skips_uploaded_areas_and_accepts_online_refs(entity_graph):
+    collection = RDECollection(entity_graph["all"])
+    collection.validate_data()
+    value = client()
+    value.ensure_area_references_available(collection)
+    assert value.session.calls == []
+
+    external_id = "00000000-0000-0000-0000-000000000120"
+    entity_graph["dataset"].has_areas = [external_id]
+    external_collection = RDECollection(entity_graph["all"])
+    value = client([Response(200, {"id": external_id})])
+    value.ensure_area_references_available(external_collection)
+    assert value.session.calls[0][1].endswith(f"/areas/{external_id}")
+
+
+def test_collection_workflow_interrupts_before_upload_for_missing_online_area(
+    monkeypatch, tmp_path, entity_graph
+):
+    missing_id = "00000000-0000-0000-0000-000000000120"
+    entity_graph["dataset"].has_areas = [missing_id]
+    collection = RDECollection(entity_graph["all"])
+    with pytest.warns(UserWarning, match="target backend"):
+        collection.validate_data()
+    value = client([Response(404, {"message": "missing"})])
+    upload_attempted = False
+
+    def upload_files(_paths):
+        nonlocal upload_attempted
+        upload_attempted = True
+
+    monkeypatch.setattr(value, "upload_files", upload_files)
+    with pytest.raises(ImportWorkflowError, match="Upload interrupted"):
+        value.run_collection_workflow(collection, tmp_path)
+
+    assert upload_attempted is False
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_upload_file_builds_multipart_and_verifies_response(tmp_path):
     source = tmp_path / "dataset.json"
     source.write_text('{"ok": true}')
@@ -208,7 +259,13 @@ def test_collection_workflow_requires_validation_and_runs_all_phases(
 
     collection.validate_data()
     monkeypatch.setattr(value, "upload_files", lambda paths: [{"uuid": "file"}])
-    monkeypatch.setattr(value, "create_import", lambda ids: {"uuid": "import"})
+    created_import_types = []
+    monkeypatch.setattr(
+        value,
+        "create_import",
+        lambda ids, import_type: created_import_types.append(import_type)
+        or {"uuid": "import"},
+    )
     waits = iter(
         [
             ({"status": "packaged"}, [{"id": 1}]),
@@ -241,9 +298,11 @@ def test_collection_workflow_requires_validation_and_runs_all_phases(
     result = value.run_collection_workflow(collection, tmp_path, poll_interval=0)
 
     assert result.import_data["status"] == "completed"
+    assert created_import_types == ["full"]
     assert result.events == [{"id": 1}, {"id": 2}, {"id": 3}]
-    assert published == ["point_of_interest", "dataset", "map"]
+    assert published == ["area", "point_of_interest", "dataset", "map"]
     assert [item[0] for item in individually_published] == [
+        "area",
         "point_of_interest",
         "dataset",
         "map",
@@ -255,7 +314,9 @@ def test_collection_workflow_stops_on_failed_report(monkeypatch, tmp_path, entit
     collection.validate_data()
     value = client()
     monkeypatch.setattr(value, "upload_files", lambda paths: [{"uuid": "file"}])
-    monkeypatch.setattr(value, "create_import", lambda ids: {"uuid": "import"})
+    monkeypatch.setattr(
+        value, "create_import", lambda ids, import_type: {"uuid": "import"}
+    )
     monkeypatch.setattr(value, "wait_for_import", lambda *args, **kwargs: ({}, []))
     monkeypatch.setattr(value, "validate_import", lambda _: None)
     monkeypatch.setattr(

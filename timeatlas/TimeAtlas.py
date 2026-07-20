@@ -3,6 +3,7 @@ import os
 import pickle
 import shapely
 import uuid
+import warnings
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -440,7 +441,9 @@ class RDECollection:
     }
     """Mapping from RDE concrete class to (output filename stem, rde_type label)."""
 
-    _DATASET_TIED_TYPES: frozenset[type] = frozenset(_FILE_MAP)
+    _DATASET_TIED_TYPES: frozenset[type] = frozenset(
+        {HistoricalRecord, Observation, PointOfInterest, Dataset}
+    )
     """RDE types whose output files carry a ``related_dataset_slugs`` header field."""
 
     _POI_NAMESPACE = uuid.uuid5(
@@ -448,6 +451,12 @@ class RDECollection:
         'https://timemachine.epfl.ch/operational/pois/',
     )
     """Shared namespace used for coordinate-derived Point of Interest UUIDs."""
+
+    _AREA_NAMESPACE = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        'https://timemachine.epfl.ch/operational/areas/',
+    )
+    """Shared namespace used for deterministic extent-derived Area UUIDs."""
 
     def __init__(self, rdes: list[RDE]):
         """Create an RDECollection.
@@ -715,6 +724,100 @@ class RDECollection:
         self._valid_data = False
         return generated_pois
 
+    def consolidate_data(self, coordinate_precision: int = 5) -> list[PointOfInterest]:
+        """Backward-compatible alias for PoI aggregation."""
+        return self.aggregate_observations_into_points_of_interest(coordinate_precision)
+
+    def produce_area_from_current_extent(
+        self,
+        dataset: Dataset | None = None,
+        *,
+        padding: float = 1e-9,
+    ) -> Area:
+        """Create and attach an ad-hoc Area covering the collection's spatial extent.
+
+        The extent is the rectangular envelope of the union of every non-empty
+        observation geometry and standalone :class:`Geometry` RDE. Degenerate
+        point or line extents are padded minimally so the resulting Area always
+        has a polygon geometry suitable for spatial indexing.
+
+        When *dataset* is omitted, the collection must contain exactly one
+        Dataset. The new Area is added to the collection and its UUID is added to
+        ``dataset.has_areas``. UUID and slug generation are deterministic, making
+        repeated calls idempotent.
+        """
+        if padding <= 0:
+            raise ValueError('padding must be greater than 0')
+
+        datasets = [rde for rde in self.rdes if isinstance(rde, Dataset)]
+        if dataset is None:
+            if len(datasets) != 1:
+                raise ValueError(
+                    'dataset must be provided unless the collection contains exactly one Dataset'
+                )
+            dataset = datasets[0]
+        elif all(dataset is not candidate for candidate in datasets):
+            raise ValueError('dataset must be present in the RDECollection')
+
+        spatial_objects = [
+            rde.geometry
+            for rde in self.rdes
+            if isinstance(rde, (Observation, Geometry))
+            and rde.geometry is not None
+            and not rde.geometry.is_empty
+        ]
+        if not spatial_objects:
+            raise ValueError(
+                f'Cannot produce an Area for dataset {dataset.slug}: '
+                'the collection has no observation or Geometry extent'
+            )
+
+        min_x, min_y, max_x, max_y = map(
+            float,
+            shapely.union_all(spatial_objects).bounds,
+        )
+        if min_x == max_x:
+            min_x -= padding
+            max_x += padding
+        if min_y == max_y:
+            min_y -= padding
+            max_y += padding
+        extent = shapely.geometry.box(min_x, min_y, max_x, max_y)
+        slug = f'{dataset.slug}-data-extent'
+        area_id = str(
+            uuid.uuid5(
+                self._AREA_NAMESPACE,
+                f'{dataset.id}:{min_x}:{min_y}:{max_x}:{max_y}',
+            )
+        )
+        existing = next(
+            (
+                rde
+                for rde in self.rdes
+                if isinstance(rde, Area) and rde.id == area_id
+            ),
+            None,
+        )
+        area = existing or Area(
+            id=area_id,
+            slug=slug,
+            name=MultiLingualValue({'en': [f'{dataset.slug} data extent']}),
+            geometry=extent,
+        )
+        if existing is None:
+            self.rdes.append(area)
+
+        area_references = list(dataset.has_areas or [])
+        referenced_ids = {
+            ref.get_ref() if isinstance(ref, UUIDEntity) else ref
+            for ref in area_references
+        }
+        if area.id not in referenced_ids:
+            area_references.append(area.id)
+            dataset.has_areas = area_references
+        self._valid_data = False
+        return area
+
     def validate_data(
         self,
         mode: str = 'strict',
@@ -724,7 +827,13 @@ class RDECollection:
     ) -> bool:
         """Validate the internal consistency of all RDE entities in the collection.
 
-        Performs three categories of checks:
+        First ensures that every Dataset has an area reference for backend spatial
+        indexing. A dataset without one receives a generated, serialized Area
+        covering the current collection extent. Referenced areas absent from the
+        collection emit a warning because they must already exist in the target
+        backend.
+
+        Then performs three categories of consistency checks:
 
         1. **Global UUID uniqueness** — every entity in the collection must have a
            distinct UUID.
@@ -759,8 +868,9 @@ class RDECollection:
         intended for legacy/raw producers and enables both
         ``allow_null_has_geometries`` and ``allow_unresolved_poi``.
 
-        Sets :attr:`_valid_data` to ``True`` when all checks pass.  Any failure
-        raises a :exc:`ValueError` listing every detected problem.
+        Sets :attr:`_valid_data` to ``True`` when all checks pass. The method may
+        mutate the collection by adding an extent-derived Area. Any failure raises
+        a :exc:`ValueError` listing every detected problem.
 
         Returns:
             ``True`` when the collection passes all checks.
@@ -776,6 +886,45 @@ class RDECollection:
             allow_unresolved_poi = True
 
         errors: list[str] = []
+
+        # Ensure every dataset can participate in the backend's by-area index.
+        # Missing references can be repaired locally; external references cannot
+        # be checked without knowing the target backend, so they remain warnings.
+        datasets = [rde for rde in self.rdes if isinstance(rde, Dataset)]
+        for dataset in datasets:
+            if not dataset.has_areas:
+                warnings.warn(
+                    f'Dataset {dataset.slug} references no areas; an ad-hoc Area '
+                    'will be built and serialized from the current geographical extent.',
+                    UserWarning,
+                    stacklevel=2,
+                )
+                try:
+                    self.produce_area_from_current_extent(dataset)
+                except ValueError as exc:
+                    errors.append(str(exc))
+
+        collection_area_ids = {
+            rde.id for rde in self.rdes if isinstance(rde, Area)
+        }
+        for dataset in datasets:
+            referenced_area_ids = {
+                ref.get_ref() if isinstance(ref, UUIDEntity) else ref
+                for ref in (dataset.has_areas or [])
+            }
+            missing_area_ids = {
+                area_id
+                for area_id in referenced_area_ids
+                if area_id and area_id not in collection_area_ids
+            }
+            if missing_area_ids:
+                warnings.warn(
+                    f'Dataset {dataset.slug} references Area UUIDs not present in '
+                    f'the RDECollection: {sorted(missing_area_ids)}. Importing will '
+                    'fail unless those areas already exist in the target backend.',
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         def resolve_ref(ref) -> str | None:
             """Return the UUID string from any RDE reference form.

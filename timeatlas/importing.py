@@ -95,10 +95,11 @@ class TimeAtlasImportClient:
     def _url(self, path: str) -> str:
         return f"{self.api_url}/teams/{self.team_id}/{path.lstrip('/')}"
 
-    def _request(self, method: str, path: str, expected: Iterable[int], **kwargs) -> dict:
+    def _send(self, method: str, url: str, **kwargs):
+        """Send a request, retrying API throttling responses."""
         for attempt in range(self.max_retries + 1):
             response = self.session.request(
-                method, self._url(path), timeout=self.timeout, **kwargs
+                method, url, timeout=self.timeout, **kwargs
             )
             if response.status_code != 429 or attempt == self.max_retries:
                 break
@@ -108,14 +109,35 @@ class TimeAtlasImportClient:
             except (TypeError, ValueError):
                 delay = min(2**attempt, 30)
             time.sleep(delay)
+        return response
+
+    def _request_url(
+        self,
+        method: str,
+        url: str,
+        expected: Iterable[int],
+        *,
+        request_label: str,
+        **kwargs,
+    ) -> dict:
+        response = self._send(method, url, **kwargs)
         if response.status_code not in set(expected):
             detail = response.text[:1000]
             raise ImportWorkflowError(
-                f"{method.upper()} {path} returned HTTP {response.status_code}: {detail}"
+                f"{method.upper()} {request_label} returned HTTP {response.status_code}: {detail}"
             )
         if response.status_code == 204 or not response.content:
             return {}
         return response.json()
+
+    def _request(self, method: str, path: str, expected: Iterable[int], **kwargs) -> dict:
+        return self._request_url(
+            method,
+            self._url(path),
+            expected,
+            request_label=path,
+            **kwargs,
+        )
 
     @staticmethod
     def _data(payload: dict) -> dict:
@@ -177,6 +199,50 @@ class TimeAtlasImportClient:
                 break
             page += 1
         return files
+
+    def area_exists_online(self, area_id: str) -> bool:
+        """Return whether ``GET /areas/<uuid>`` resolves on the target API."""
+        path = f"areas/{area_id}"
+        response = self._send("get", f"{self.api_url}/{path}")
+        if response.status_code == 200:
+            return True
+        if response.status_code == 404:
+            return False
+        detail = response.text[:1000]
+        raise ImportWorkflowError(
+            f"GET {path} returned HTTP {response.status_code}: {detail}"
+        )
+
+    def ensure_area_references_available(self, collection) -> None:
+        """Ensure dataset areas are included in the upload or exist in the API."""
+        dataset_class = collection._class_for_name("Dataset")
+        area_class = collection._class_for_name("Area")
+        uploaded_area_ids = {
+            item.id for item in collection.rdes if isinstance(item, area_class)
+        }
+        external_area_ids: set[str] = set()
+        for dataset in collection.rdes:
+            if not isinstance(dataset, dataset_class):
+                continue
+            for reference in dataset.has_areas or []:
+                area_id = (
+                    reference.get_ref()
+                    if hasattr(reference, "get_ref")
+                    else reference
+                )
+                if area_id and area_id not in uploaded_area_ids:
+                    external_area_ids.add(str(area_id))
+
+        missing = sorted(
+            area_id
+            for area_id in external_area_ids
+            if not self.area_exists_online(area_id)
+        )
+        if missing:
+            raise ImportWorkflowError(
+                "Upload interrupted: dataset Area UUIDs are neither present in "
+                f"the collection nor available from the target API: {missing}"
+            )
 
     def upload_files(
         self, paths: Iterable[str | Path], virtual_folder_path: str | None = None
@@ -341,6 +407,7 @@ class TimeAtlasImportClient:
         if not getattr(collection, "_valid_data", False):
             raise ValueError("RDECollection must pass validate_data() before upload")
 
+        self.ensure_area_references_available(collection)
         output = Path(output_dir)
         collection.save_rde_to_files(str(output), overwrite=True)
         present_types = {type(item) for item in collection.rdes}
@@ -350,7 +417,15 @@ class TimeAtlasImportClient:
             if cls in present_types
         ]
         uploaded = self.upload_files(paths)
-        created = self.create_import(item["uuid"] for item in uploaded)
+        import_type = (
+            "full"
+            if collection._class_for_name("Area") in present_types
+            else "dataset"
+        )
+        created = self.create_import(
+            (item["uuid"] for item in uploaded),
+            import_type=import_type,
+        )
         import_id = created["uuid"]
 
         emitted_event_ids: set[int] = set()
@@ -396,10 +471,10 @@ class TimeAtlasImportClient:
         # including dataset-level PoIs, without thousands of individual calls.
         resource_types = []
         for cls, resource_type in (
+            (collection._class_for_name("Area"), "area"),
             (collection._class_for_name("PointOfInterest"), "point_of_interest"),
             (collection._class_for_name("Dataset"), "dataset"),
             (collection._class_for_name("Map"), "map"),
-            (collection._class_for_name("Area"), "area"),
         ):
             if cls in present_types:
                 resource_types.append(resource_type)

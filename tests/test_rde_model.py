@@ -259,6 +259,14 @@ def test_dataset_can_be_built_from_configuration_and_dataframe(tmp_path):
     assert dataset.time_range.end_time == "1809-12-31T23:59:59"
     assert dataset.sources == ["manifest"]
 
+    config_without_areas = json.loads(config_path.read_text())
+    config_without_areas.pop("AREA_LOCS")
+    config_path.write_text(json.dumps(config_without_areas))
+    dataset_without_areas = Dataset.constructor_from_dataconfiguration_file_and_dataframe(
+        str(config_path), dataframe
+    )
+    assert dataset_without_areas.has_areas == []
+
 
 def test_dataset_instantiates_related_records_and_observations(entity_graph):
     dataset = entity_graph["dataset"]

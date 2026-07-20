@@ -59,12 +59,34 @@ Observations at coordinates that match after rounding to five decimal places sha
 a deterministic PoI UUID. Set `part_of_point_of_interest=False` on observations
 that should not produce a PoI.
 
+## Dataset areas and spatial indexing
+
+`RDECollection.validate_data()` ensures every dataset can participate in the
+backend's by-area index. If a dataset has no area references, validation warns and
+adds a deterministic ad-hoc `Area` covering the union extent of observation and
+Geometry RDE geometries. That area is attached to the dataset and is subsequently
+written to `areas.json`.
+
+```python
+collection.validate_data()  # may add an extent-derived Area
+collection.save_rde_to_files("output/dataset-slug")
+```
+
+You can create it explicitly with
+`collection.produce_area_from_current_extent()`. When a dataset already references
+area UUIDs that are absent from the collection, validation warns that those areas
+must already exist in the target backend.
+
 ## Uploading, importing, and publishing a collection
 
 The import client runs the manual server workflow end to end. The collection must
 pass local validation first; the client then serializes it, verifies every upload,
 waits for packaging, checks the server validation report, queues the import, and
 bulk-publishes its resources only after completion.
+
+Before writing or uploading files, area UUIDs referenced by datasets but absent
+from the collection are checked against `GET /areas/<uuid>` on the target API. The
+workflow is interrupted if any referenced area exists neither locally nor online.
 
 ```python
 from timeatlas import RDECollection, TimeAtlasImportClient

@@ -599,7 +599,7 @@ class Dataset(RDE, UUIDEntity):
             for v in conf['dataset_metadata_config'].values()
         ]
 
-        area_uuids = _get_area_uuids(conf_content['AREA_LOCS'])
+        area_uuids = _get_area_uuids(conf_content.get('AREA_LOCS', []))
 
         ds = cls(
             id=ds_id,
