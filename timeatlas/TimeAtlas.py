@@ -724,10 +724,6 @@ class RDECollection:
         self._valid_data = False
         return generated_pois
 
-    def consolidate_data(self, coordinate_precision: int = 5) -> list[PointOfInterest]:
-        """Backward-compatible alias for PoI aggregation."""
-        return self.aggregate_observations_into_points_of_interest(coordinate_precision)
-
     def produce_area_from_current_extent(
         self,
         dataset: Dataset | None = None,

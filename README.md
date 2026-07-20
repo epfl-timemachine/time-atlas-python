@@ -51,7 +51,7 @@ other dataset files:
 from timeatlas import RDECollection
 
 collection = RDECollection(historical_records + observations + [dataset])
-points_of_interest = collection.consolidate_data()
+points_of_interest = collection.aggregate_observations_into_points_of_interest()
 collection.save_rde_to_files("output/dataset-slug")
 ```
 
