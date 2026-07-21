@@ -214,6 +214,24 @@ def test_envelope_writer_batches_by_estimated_json_size(tmp_path, entity_graph):
     assert json.loads(paths[0].read_text(encoding="utf-8"))["name"] == "demo_geometries_batch_0"
 
 
+def test_envelope_writer_validates_objects_sizes_and_existing_files(tmp_path):
+    writer = RDEEnvelopeWriter(tmp_path)
+    path = writer.write("existing", [{"id": uid(1)}], None, "dataset")
+
+    assert writer.write(
+        path, [{"id": uid(1)}], None, "dataset", overwrite=False, skip_if_unchanged=True
+    ) == path
+    with pytest.raises(FileExistsError):
+        writer.write(path, [], None, "dataset", overwrite=False)
+    with pytest.raises(FileExistsError):
+        writer.write_stream(path, [], None, "dataset", overwrite=False)
+    with pytest.raises(TypeError, match="Unsupported"):
+        writer.serialize_object(object())
+    with pytest.raises(ValueError, match="max_size_bytes"):
+        writer.write_batches_by_size("batch", [], None, "dataset", 0)
+    assert writer.write_batches_by_size("batch", [], None, "dataset", 100) == []
+
+
 def test_collection_read_ignores_non_json_unknown_and_empty_envelopes(tmp_path):
     (tmp_path / "notes.txt").write_text("ignored")
     (tmp_path / "unknown.json").write_text(
@@ -232,6 +250,83 @@ def test_collection_read_propagates_malformed_json(tmp_path):
 def test_collection_read_requires_existing_directory(tmp_path):
     with pytest.raises(FileNotFoundError):
         RDECollection.read_rde_from_files(str(tmp_path / "missing"))
+
+
+def test_collection_aggregates_observations_and_replaces_obsolete_pois(entity_graph):
+    first = entity_graph["observation"]
+    obsolete_poi = entity_graph["point_of_interest"]
+    first.part_of_point_of_interest = obsolete_poi
+    same_location = copy.deepcopy(first)
+    same_location.id = uid(30)
+    same_location.geometry = Point(0.250004, 0.250004)
+    another_location = copy.deepcopy(first)
+    another_location.id = uid(31)
+    another_location.geometry = Point(0.3, 0.4)
+    unrelated_poi = copy.deepcopy(obsolete_poi)
+    unrelated_poi.id = uid(32)
+    collection = RDECollection(
+        [first, same_location, another_location, obsolete_poi, unrelated_poi]
+    )
+
+    pois = collection.aggregate_observations_into_points_of_interest()
+
+    expected_first_id = str(
+        uuid.uuid5(RDECollection._POI_NAMESPACE, "poi_0.25_0.25")
+    )
+    assert [poi.id for poi in pois] == [
+        expected_first_id,
+        str(uuid.uuid5(RDECollection._POI_NAMESPACE, "poi_0.3_0.4")),
+    ]
+    assert first.part_of_point_of_interest == expected_first_id
+    assert same_location.part_of_point_of_interest == expected_first_id
+    assert another_location.part_of_point_of_interest == pois[1].id
+    collection_poi_ids = {
+        item.id for item in collection.rdes if type(item) is type(obsolete_poi)
+    }
+    assert obsolete_poi.id not in collection_poi_ids
+    assert unrelated_poi.id in collection_poi_ids
+    assert collection._valid_data is False
+
+
+def test_collection_aggregation_reuses_generated_poi_and_is_idempotent(entity_graph):
+    observation = entity_graph["observation"]
+    poi = entity_graph["point_of_interest"]
+    poi.id = str(uuid.uuid5(RDECollection._POI_NAMESPACE, "poi_0.25_0.25"))
+    observation.part_of_point_of_interest = poi.id
+    collection = RDECollection([observation, poi])
+
+    assert collection.aggregate_observations_into_points_of_interest() == [poi]
+    assert collection.aggregate_observations_into_points_of_interest() == [poi]
+    assert poi.height.terrain == 10.0
+    assert len([item for item in collection.rdes if type(item) is type(poi)]) == 1
+
+
+def test_collection_aggregation_skips_non_participating_observations(entity_graph):
+    disabled = copy.deepcopy(entity_graph["observation"])
+    disabled.part_of_point_of_interest = False
+    missing_geometry = copy.deepcopy(entity_graph["observation"])
+    missing_geometry.id = uid(33)
+    missing_geometry.geometry = None
+    empty_geometry = copy.deepcopy(entity_graph["observation"])
+    empty_geometry.id = uid(34)
+    empty_geometry.geometry = Point()
+    collection = RDECollection([disabled, missing_geometry, empty_geometry])
+
+    assert collection.aggregate_observations_into_points_of_interest() == []
+    assert all(
+        observation.part_of_point_of_interest is None
+        for observation in (disabled, missing_geometry, empty_geometry)
+    )
+
+
+def test_collection_aggregation_rejects_invalid_inputs(entity_graph):
+    collection = RDECollection([entity_graph["observation"]])
+    with pytest.raises(ValueError, match="coordinate_precision"):
+        collection.aggregate_observations_into_points_of_interest(-1)
+
+    entity_graph["observation"].geometry = entity_graph["geometry"].geometry
+    with pytest.raises(ValueError, match="must have a Point geometry"):
+        collection.aggregate_observations_into_points_of_interest()
 
 
 def test_collection_validation_accepts_complete_graph_and_marks_it_valid(entity_graph):
