@@ -137,3 +137,6 @@ Thumbs.db
 rde_entity_cache.pkl
 *.pkl
 /test/venice-1857-commercial-directory
+/test/datasets
+/test/maps
+/test/areas

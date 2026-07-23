@@ -1,8 +1,10 @@
 import hashlib
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
+import requests
 
 from timeatlas import ImportWorkflowError, RDECollection, TimeAtlasImportClient
 
@@ -19,6 +21,11 @@ class Response:
         return self._payload
 
 
+class MalformedJsonResponse(Response):
+    def json(self):
+        raise requests.JSONDecodeError("Extra data", "{}{}", 2)
+
+
 class Session:
     def __init__(self, responses=()):
         self.headers = {}
@@ -27,7 +34,10 @@ class Session:
 
     def request(self, method, url, **kwargs):
         self.calls.append((method, url, kwargs))
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
 def client(responses=()):
@@ -82,6 +92,49 @@ def test_request_retries_throttled_responses(monkeypatch):
     )
     monkeypatch.setattr("timeatlas.importing.time.sleep", lambda _: None)
     assert value._request("get", "files", {200})["data"]["ok"] is True
+
+
+def test_request_retries_transient_failures_only_for_safe_methods(monkeypatch):
+    monkeypatch.setattr("timeatlas.importing.time.sleep", lambda _: None)
+    value = client(
+        [requests.ReadTimeout("busy"), Response(200, {"data": {"ok": True}})]
+    )
+
+    assert value._request("get", "files", {200})["data"]["ok"] is True
+    assert len(value.session.calls) == 2
+
+    value = client([requests.ConnectionError("lost")])
+    with pytest.raises(requests.ConnectionError, match="lost"):
+        value._request("post", "imports", {202})
+    assert len(value.session.calls) == 1
+
+
+def test_request_retries_malformed_json_only_for_safe_methods(monkeypatch):
+    monkeypatch.setattr("timeatlas.importing.time.sleep", lambda _: None)
+    value = client(
+        [MalformedJsonResponse(200, text="{}{}"), Response(200, {"data": {"ok": True}})]
+    )
+
+    assert value._request("get", "imports/id/events", {200})["data"]["ok"] is True
+    assert len(value.session.calls) == 2
+
+    value = client([MalformedJsonResponse(202, text="{}{}")])
+    with pytest.raises(ImportWorkflowError, match="malformed JSON"):
+        value._request("post", "imports", {202})
+    assert len(value.session.calls) == 1
+
+
+def test_safe_request_timeout_is_capped_for_workflow_polling():
+    value = TimeAtlasImportClient(
+        "http://localhost:8000/v1",
+        "token",
+        "team",
+        timeout=600,
+        session=Session([Response(200, {"data": {"ok": True}})]),
+    )
+
+    assert value._request("get", "files", {200})["data"]["ok"] is True
+    assert value.session.calls[0][2]["timeout"] == 30
 
 
 def test_area_exists_online_uses_non_team_endpoint():
@@ -177,6 +230,61 @@ def test_list_and_upload_files_verify_server_listing(monkeypatch, tmp_path):
         value.upload_files(["two.json"])
 
 
+def test_upload_file_tree_preserves_and_verifies_virtual_folders(monkeypatch):
+    value = client()
+    uploaded_folders = []
+    monkeypatch.setattr(
+        value,
+        "upload_file",
+        lambda path, folder: uploaded_folders.append(folder)
+        or {"uuid": Path(path).stem},
+    )
+    monkeypatch.setattr(
+        value,
+        "list_files",
+        lambda folder: [{"uuid": "manifest"}]
+        if folder.endswith("manifests")
+        else [{"uuid": "dataset"}],
+    )
+
+    uploaded = value.upload_file_tree(
+        [
+            ("dataset.json", "datasets/demo"),
+            ("manifest.json", "datasets/demo/iiif/manifests"),
+        ]
+    )
+
+    assert [item["uuid"] for item in uploaded] == ["dataset", "manifest"]
+    assert uploaded_folders == [
+        "datasets/demo",
+        "datasets/demo/iiif/manifests",
+    ]
+
+
+def test_build_zip_packages_splits_and_preserves_virtual_paths(tmp_path):
+    files = []
+    for index in range(5):
+        path = tmp_path / f"manifest-{index}.json"
+        path.write_text(json.dumps({"index": index}))
+        files.append((path, "datasets/demo/iiif/manifests"))
+
+    packages = client().build_zip_packages(files, tmp_path / "packages", max_files=2)
+
+    assert [path.name for path in packages] == [
+        "timeatlas_import_package_001.zip",
+        "timeatlas_import_package_002.zip",
+        "timeatlas_import_package_003.zip",
+    ]
+    archived_paths = []
+    for package in packages:
+        with zipfile.ZipFile(package) as archive:
+            archived_paths.extend(archive.namelist())
+    assert archived_paths == [
+        f"datasets/demo/iiif/manifests/manifest-{index}.json"
+        for index in range(5)
+    ]
+
+
 def test_import_endpoint_wrappers():
     responses = [
         Response(202, {"data": {"uuid": "import"}}),
@@ -228,6 +336,33 @@ def test_publish_resources_uses_bounded_worker_pool(monkeypatch):
     ]
     with pytest.raises(ValueError, match="max_workers"):
         value.publish_resources("dataset", [], max_workers=0)
+
+
+def test_wait_for_publications_polls_import_result(monkeypatch):
+    value = client()
+    states = iter(
+        [
+            {"result": None},
+            {
+                "result": {
+                    "bulk_publication": {
+                        "datasets": {
+                            "action": "publish",
+                            "visibility": "public",
+                            "completed_at": "2026-07-21T11:54:51Z",
+                            "affected": 1,
+                        }
+                    }
+                }
+            },
+        ]
+    )
+    monkeypatch.setattr(value, "get_import", lambda _: next(states))
+    monkeypatch.setattr("timeatlas.importing.time.sleep", lambda _: None)
+
+    result = value.wait_for_publications("import", ["dataset"], poll_interval=0)
+
+    assert result["datasets"]["affected"] == 1
 
 
 def test_wait_for_import_collects_events_and_handles_failure(monkeypatch):
@@ -283,7 +418,8 @@ def test_collection_workflow_requires_validation_and_runs_all_phases(
     monkeypatch.setattr(
         value,
         "publish_import_resource_type",
-        lambda import_id, kind, visibility: published.append(kind) or {"type": kind},
+        lambda import_id, kind, visibility: published.append(kind)
+        or {"type": kind, "action": "publish", "total": 1},
     )
     individually_published = []
     monkeypatch.setattr(
@@ -294,6 +430,14 @@ def test_collection_workflow_requires_validation_and_runs_all_phases(
         )
         or [],
     )
+    waited_publications = []
+    monkeypatch.setattr(
+        value,
+        "wait_for_publications",
+        lambda import_id, kinds, visibility, **kwargs: waited_publications.append(
+            (import_id, list(kinds), visibility)
+        ),
+    )
 
     result = value.run_collection_workflow(collection, tmp_path, poll_interval=0)
 
@@ -301,12 +445,101 @@ def test_collection_workflow_requires_validation_and_runs_all_phases(
     assert created_import_types == ["full"]
     assert result.events == [{"id": 1}, {"id": 2}, {"id": 3}]
     assert published == ["area", "point_of_interest", "dataset", "map"]
-    assert [item[0] for item in individually_published] == [
-        "area",
-        "point_of_interest",
-        "dataset",
-        "map",
+    assert individually_published == []
+    assert waited_publications == [
+        (
+            "import",
+            ["area", "point_of_interest", "dataset", "map"],
+            "public",
+        )
     ]
+
+
+def test_collection_workflow_jsonl_uploads_one_mixed_root_package(
+    monkeypatch, tmp_path, entity_graph
+):
+    collection = RDECollection(entity_graph["all"])
+    collection.validate_data()
+    value = client()
+    uploaded_paths = []
+    monkeypatch.setattr(
+        value,
+        "upload_files",
+        lambda paths: uploaded_paths.extend(paths) or [{"uuid": "file"}],
+    )
+    created_imports = []
+
+    def create_import(ids, *, import_type, config):
+        created_imports.append((list(ids), import_type, config))
+        return {"uuid": "import"}
+
+    monkeypatch.setattr(value, "create_import", create_import)
+    waits = iter(
+        [
+            ({"status": "packaged"}, []),
+            ({"status": "validated"}, []),
+            ({"status": "completed"}, []),
+        ]
+    )
+    monkeypatch.setattr(value, "wait_for_import", lambda *args, **kwargs: next(waits))
+    monkeypatch.setattr(value, "validate_import", lambda _: None)
+    monkeypatch.setattr(
+        value, "get_validation_report", lambda _: {"status": "passed", "failures": []}
+    )
+    monkeypatch.setattr(value, "queue_import", lambda _: None)
+    monkeypatch.setattr(
+        value,
+        "publish_import_resource_type",
+        lambda *args: {"status": "published"},
+    )
+
+    value.run_collection_workflow(
+        collection,
+        tmp_path,
+        rde_format="jsonl",
+        rde_jsonl_filename="demo-package.jsonl",
+        poll_interval=0,
+    )
+
+    assert uploaded_paths == [tmp_path / "demo-package.jsonl"]
+    envelopes = [
+        json.loads(line)
+        for line in uploaded_paths[0].read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(envelopes) == len({type(item) for item in collection.rdes})
+    assert all(envelope["rde_objects"] for envelope in envelopes)
+    assert created_imports == [
+        (
+            ["file"],
+            "dataset",
+            {"scope": "all", "types": "rde"},
+        )
+    ]
+
+
+def test_collection_workflow_rejects_invalid_jsonl_routing(
+    tmp_path, entity_graph
+):
+    collection = RDECollection(entity_graph["all"])
+    collection.validate_data()
+    value = client()
+
+    with pytest.raises(ValueError, match="rde_format"):
+        value.run_collection_workflow(collection, tmp_path, rde_format="xml")
+    with pytest.raises(ValueError, match="staging root"):
+        value.run_collection_workflow(
+            collection,
+            tmp_path,
+            rde_format="jsonl",
+            upload_folder="datasets/demo",
+        )
+    with pytest.raises(ValueError, match="package_as_zip"):
+        value.run_collection_workflow(
+            collection,
+            tmp_path,
+            rde_format="jsonl",
+            package_as_zip=True,
+        )
 
 
 def test_collection_workflow_stops_on_failed_report(monkeypatch, tmp_path, entity_graph):
@@ -326,3 +559,51 @@ def test_collection_workflow_stops_on_failed_report(monkeypatch, tmp_path, entit
     )
     with pytest.raises(ImportWorkflowError, match="did not pass"):
         value.run_collection_workflow(collection, tmp_path)
+
+
+def test_collection_workflow_routes_serialized_resource_files(
+    monkeypatch, tmp_path, entity_graph
+):
+    collection = RDECollection(entity_graph["all"])
+    collection.validate_data()
+    value = client()
+    uploaded_specs = []
+    monkeypatch.setattr(
+        value,
+        "upload_file_tree",
+        lambda specs: uploaded_specs.extend(specs) or [{"uuid": "file"}],
+    )
+    monkeypatch.setattr(
+        value, "create_import", lambda ids, import_type: {"uuid": "import"}
+    )
+    waits = iter(
+        [
+            ({"status": "packaged"}, []),
+            ({"status": "validated"}, []),
+            ({"status": "completed"}, []),
+        ]
+    )
+    monkeypatch.setattr(value, "wait_for_import", lambda *args, **kwargs: next(waits))
+    monkeypatch.setattr(value, "validate_import", lambda _: None)
+    monkeypatch.setattr(
+        value, "get_validation_report", lambda _: {"status": "passed", "failures": []}
+    )
+    monkeypatch.setattr(value, "queue_import", lambda _: None)
+    monkeypatch.setattr(
+        value,
+        "publish_import_resource_type",
+        lambda *args: {"status": "published"},
+    )
+
+    value.run_collection_workflow(
+        collection,
+        tmp_path,
+        upload_folder="datasets/example",
+        upload_folders={"areas": "areas", "maps": "maps/example"},
+        poll_interval=0,
+    )
+
+    folders = {path.stem: folder for path, folder in uploaded_specs}
+    assert folders["areas"] == "areas"
+    assert folders["maps"] == "maps/example"
+    assert folders["dataset"] == "datasets/example"

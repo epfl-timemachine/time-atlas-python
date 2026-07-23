@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Callable, Iterable
+from pathlib import Path, PurePosixPath
+from typing import Callable, Iterable, Literal, Mapping
 
 import requests
 
@@ -50,6 +51,12 @@ class TimeAtlasImportClient:
         "map": "maps",
         "area": "areas",
         "point_of_interest": "points-of-interest",
+    }
+    _PUBLICATION_RESULT_KEYS = {
+        "dataset": "datasets",
+        "map": "maps",
+        "area": "areas",
+        "point_of_interest": "points_of_interest",
     }
 
     def __init__(
@@ -96,11 +103,30 @@ class TimeAtlasImportClient:
         return f"{self.api_url}/teams/{self.team_id}/{path.lstrip('/')}"
 
     def _send(self, method: str, url: str, **kwargs):
-        """Send a request, retrying API throttling responses."""
+        """Send a request, retrying throttling and safe transient read failures."""
+        normalized_method = method.lower()
         for attempt in range(self.max_retries + 1):
-            response = self.session.request(
-                method, url, timeout=self.timeout, **kwargs
-            )
+            try:
+                request_timeout = (
+                    min(self.timeout, 30)
+                    if normalized_method in {"get", "head", "options"}
+                    else self.timeout
+                )
+                response = self.session.request(
+                    method, url, timeout=request_timeout, **kwargs
+                )
+            except (requests.ConnectionError, requests.Timeout):
+                # Retrying a mutating request could duplicate an upload, import,
+                # queue transition, or publication when the server committed the
+                # request before the connection failed. Polling reads are
+                # idempotent and can safely tolerate transient backend pressure.
+                if (
+                    normalized_method not in {"get", "head", "options"}
+                    or attempt == self.max_retries
+                ):
+                    raise
+                time.sleep(min(2**attempt, 30))
+                continue
             if response.status_code != 429 or attempt == self.max_retries:
                 break
             retry_after = getattr(response, "headers", {}).get("Retry-After")
@@ -120,15 +146,34 @@ class TimeAtlasImportClient:
         request_label: str,
         **kwargs,
     ) -> dict:
-        response = self._send(method, url, **kwargs)
-        if response.status_code not in set(expected):
-            detail = response.text[:1000]
-            raise ImportWorkflowError(
-                f"{method.upper()} {request_label} returned HTTP {response.status_code}: {detail}"
-            )
-        if response.status_code == 204 or not response.content:
-            return {}
-        return response.json()
+        normalized_method = method.lower()
+        expected_statuses = set(expected)
+        for attempt in range(self.max_retries + 1):
+            response = self._send(method, url, **kwargs)
+            if response.status_code not in expected_statuses:
+                detail = response.text[:1000]
+                raise ImportWorkflowError(
+                    f"{method.upper()} {request_label} returned HTTP "
+                    f"{response.status_code}: {detail}"
+                )
+            if response.status_code == 204 or not response.content:
+                return {}
+            try:
+                return response.json()
+            except requests.JSONDecodeError as error:
+                # Under heavy backend pressure a proxy or long-lived application
+                # worker can occasionally return a truncated/concatenated JSON
+                # body with an otherwise successful status. Retrying a polling
+                # read is safe; retrying a mutation could duplicate committed work.
+                if (
+                    normalized_method not in {"get", "head", "options"}
+                    or attempt == self.max_retries
+                ):
+                    raise ImportWorkflowError(
+                        f"{method.upper()} {request_label} returned malformed JSON"
+                    ) from error
+                time.sleep(min(2**attempt, 30))
+        raise AssertionError("request retry loop exited unexpectedly")
 
     def _request(self, method: str, path: str, expected: Iterable[int], **kwargs) -> dict:
         return self._request_url(
@@ -162,7 +207,11 @@ class TimeAtlasImportClient:
                 files={"file": (source.name, stream, mime_type)},
             )
         uploaded = self._data(payload)
-        expected_checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+        checksum = hashlib.sha256()
+        with source.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                checksum.update(chunk)
+        expected_checksum = checksum.hexdigest()
         mismatches = []
         if uploaded.get("original_filename") != source.name:
             mismatches.append("filename")
@@ -248,12 +297,105 @@ class TimeAtlasImportClient:
         self, paths: Iterable[str | Path], virtual_folder_path: str | None = None
     ) -> list[dict]:
         """Upload several files and confirm every returned UUID appears in the listing."""
-        uploaded = [self.upload_file(path, virtual_folder_path) for path in paths]
-        listed_ids = {item.get("uuid") for item in self.list_files(virtual_folder_path or "")}
+        return self.upload_file_tree(
+            (path, virtual_folder_path) for path in paths
+        )
+
+    def upload_file_tree(
+        self,
+        files: Iterable[tuple[str | Path, str | None]],
+    ) -> list[dict]:
+        """Upload files to individual virtual folders and verify each folder listing."""
+        specs = list(files)
+        uploaded = [self.upload_file(path, folder) for path, folder in specs]
+        listed_ids: set[str | None] = set()
+        for folder in {folder or "" for _path, folder in specs}:
+            listed_ids.update(item.get("uuid") for item in self.list_files(folder))
         missing = [item.get("uuid") for item in uploaded if item.get("uuid") not in listed_ids]
         if missing:
             raise ImportWorkflowError(f"Uploaded files are absent from the team listing: {missing}")
         return uploaded
+
+    def build_zip_packages(
+        self,
+        files: Iterable[tuple[str | Path, str | None]],
+        output_dir: str | Path,
+        *,
+        max_files: int = 45_000,
+        max_expanded_bytes: int = 3_500_000_000,
+        compression_level: int = 1,
+    ) -> list[Path]:
+        """Build split import ZIPs while preserving each virtual package path.
+
+        The backend expands selected ZIP files directly into the import staging
+        directory. Splitting below its per-archive entry and expanded-size limits
+        makes packages with tens of thousands of IIIF files practical without a
+        separate HTTP upload for every manifest.
+        """
+        if max_files <= 0:
+            raise ValueError("max_files must be greater than zero")
+        if max_expanded_bytes <= 0:
+            raise ValueError("max_expanded_bytes must be greater than zero")
+        destination = Path(output_dir)
+        destination.mkdir(parents=True, exist_ok=True)
+        for stale in destination.glob("timeatlas_import_package_*.zip"):
+            stale.unlink()
+
+        packages: list[Path] = []
+        archive: zipfile.ZipFile | None = None
+        archive_entries = 0
+        archive_bytes = 0
+        seen_paths: set[str] = set()
+
+        def open_archive() -> zipfile.ZipFile:
+            package_path = destination / (
+                f"timeatlas_import_package_{len(packages) + 1:03d}.zip"
+            )
+            packages.append(package_path)
+            return zipfile.ZipFile(
+                package_path,
+                "w",
+                compression=zipfile.ZIP_DEFLATED,
+                compresslevel=compression_level,
+                allowZip64=True,
+            )
+
+        try:
+            for path, folder in files:
+                source = Path(path)
+                if not source.is_file():
+                    raise FileNotFoundError(source)
+                folder_path = PurePosixPath(folder or "")
+                if folder_path.is_absolute() or ".." in folder_path.parts:
+                    raise ValueError(f"Unsafe ZIP virtual folder: {folder}")
+                archive_path = str(folder_path / source.name)
+                if archive_path in seen_paths:
+                    raise ValueError(f"Duplicate ZIP package path: {archive_path}")
+                seen_paths.add(archive_path)
+                source_size = source.stat().st_size
+                if source_size > max_expanded_bytes:
+                    raise ValueError(
+                        f"File exceeds ZIP expanded-size limit: {source}"
+                    )
+                if archive is None or (
+                    archive_entries > 0
+                    and (
+                        archive_entries >= max_files
+                        or archive_bytes + source_size > max_expanded_bytes
+                    )
+                ):
+                    if archive is not None:
+                        archive.close()
+                    archive = open_archive()
+                    archive_entries = 0
+                    archive_bytes = 0
+                archive.write(source, archive_path)
+                archive_entries += 1
+                archive_bytes += source_size
+        finally:
+            if archive is not None:
+                archive.close()
+        return packages
 
     def create_import(
         self,
@@ -392,40 +534,146 @@ class TimeAtlasImportClient:
                 )
             )
 
+    def wait_for_publications(
+        self,
+        import_id: str,
+        resource_types: Iterable[str],
+        visibility: str = "public",
+        *,
+        timeout: float = 1800,
+        poll_interval: float = 2,
+    ) -> dict:
+        """Wait until accepted bulk-publication jobs record their completion."""
+        result_keys = {
+            self._PUBLICATION_RESULT_KEYS[resource_type]
+            for resource_type in resource_types
+        }
+        deadline = time.monotonic() + timeout
+        while True:
+            current = self.get_import(import_id)
+            bulk_publication = (current.get("result") or {}).get(
+                "bulk_publication", {}
+            )
+            complete = all(
+                (entry := bulk_publication.get(result_key, {})).get("action")
+                == "publish"
+                and entry.get("visibility") == visibility
+                and bool(entry.get("completed_at"))
+                for result_key in result_keys
+            )
+            if complete:
+                return bulk_publication
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for import {import_id} publications: "
+                    f"{sorted(result_keys)}"
+                )
+            time.sleep(poll_interval)
+
     def run_collection_workflow(
         self,
         collection,
         output_dir: str | Path,
         *,
+        rde_format: Literal["json", "jsonl"] = "json",
+        rde_jsonl_filename: str = "rde_package.jsonl",
+        upload_folder: str | None = None,
+        upload_folders: Mapping[str, str | None] | None = None,
+        additional_files: Iterable[tuple[str | Path, str | None]] = (),
+        package_as_zip: bool = False,
+        package_max_files: int = 45_000,
+        package_max_expanded_bytes: int = 3_500_000_000,
         visibility: str = "public",
         workflow_timeout: float = 1800,
         poll_interval: float = 2,
         publication_workers: int = 8,
         on_event: Callable[[dict], None] | None = None,
     ) -> ImportWorkflowResult:
-        """Serialize a validated collection and run the complete publication workflow."""
+        """Serialize a validated collection and run the complete publication workflow.
+
+        ``rde_format="json"`` preserves the traditional one-file-per-type
+        package. ``rde_format="jsonl"`` uploads one root-level file whose lines
+        are complete RDE envelopes and configures the backend to route both
+        dataset-scoped and cross-dataset resources from that mixed package.
+        """
         if not getattr(collection, "_valid_data", False):
             raise ValueError("RDECollection must pass validate_data() before upload")
+        if rde_format not in {"json", "jsonl"}:
+            raise ValueError("rde_format must be either 'json' or 'jsonl'")
+        if rde_format == "jsonl":
+            if upload_folder is not None or upload_folders:
+                raise ValueError(
+                    "Combined RDE JSONL packages must be uploaded at the staging root"
+                )
+            if package_as_zip:
+                raise ValueError(
+                    "package_as_zip cannot be combined with rde_format='jsonl'"
+                )
 
         self.ensure_area_references_available(collection)
         output = Path(output_dir)
-        collection.save_rde_to_files(str(output), overwrite=True)
         present_types = {type(item) for item in collection.rdes}
-        paths = [
-            output / f"{filename}.json"
-            for cls, (filename, _label) in collection._FILE_MAP.items()
-            if cls in present_types
-        ]
-        uploaded = self.upload_files(paths)
-        import_type = (
-            "full"
-            if collection._class_for_name("Area") in present_types
-            else "dataset"
-        )
-        created = self.create_import(
-            (item["uuid"] for item in uploaded),
-            import_type=import_type,
-        )
+        if rde_format == "jsonl":
+            paths = [
+                collection.save_rde_to_jsonl(
+                    output / rde_jsonl_filename,
+                    overwrite=True,
+                )
+            ]
+        else:
+            collection.save_rde_to_files(str(output), overwrite=True)
+            paths = [
+                output / f"{filename}.json"
+                for cls, (filename, _label) in collection._FILE_MAP.items()
+                if cls in present_types
+            ]
+
+        companion_specs = list(additional_files)
+        folder_overrides = dict(upload_folders or {})
+        if rde_format == "jsonl":
+            file_specs = [(paths[0], None)] + companion_specs
+        else:
+            unknown_filenames = folder_overrides.keys() - {
+                path.stem for path in paths
+            }
+            if unknown_filenames:
+                raise ValueError(
+                    "upload_folders contains files not serialized by this collection: "
+                    f"{', '.join(sorted(unknown_filenames))}"
+                )
+            file_specs = [
+                (path, folder_overrides.get(path.stem, upload_folder))
+                for path in paths
+            ] + companion_specs
+
+        if package_as_zip:
+            packages = self.build_zip_packages(
+                file_specs,
+                output,
+                max_files=package_max_files,
+                max_expanded_bytes=package_max_expanded_bytes,
+            )
+            uploaded = self.upload_files(packages)
+        elif upload_folder is None and not folder_overrides and not companion_specs:
+            uploaded = self.upload_files(paths)
+        else:
+            uploaded = self.upload_file_tree(file_specs)
+        if rde_format == "jsonl":
+            created = self.create_import(
+                (item["uuid"] for item in uploaded),
+                import_type="dataset",
+                config={"scope": "all", "types": "rde"},
+            )
+        else:
+            import_type = (
+                "full"
+                if collection._class_for_name("Area") in present_types
+                else "dataset"
+            )
+            created = self.create_import(
+                (item["uuid"] for item in uploaded),
+                import_type=import_type,
+            )
         import_id = created["uuid"]
 
         emitted_event_ids: set[int] = set()
@@ -479,13 +727,26 @@ class TimeAtlasImportClient:
             if cls in present_types:
                 resource_types.append(resource_type)
         publications = []
+        scheduled_publication_types = []
         for kind in resource_types:
             bulk_result = self.publish_import_resource_type(import_id, kind, visibility)
             publications.append(bulk_result)
-            # Some API releases expose the import-scoped route but return only a
-            # selection summary. In that case use the documented entity routes
-            # to guarantee that publication state is actually updated.
-            if bulk_result.get("status") != "published":
+            # Current API releases return an accepted selection summary while a
+            # background job performs the publication. Older or incompatible
+            # responses fall back to the individual entity endpoints.
+            publication_accepted = (
+                bulk_result.get("status") == "published"
+                or (
+                    bulk_result.get("action") == "publish"
+                    and isinstance(bulk_result.get("total"), int)
+                )
+            )
+            if (
+                bulk_result.get("action") == "publish"
+                and isinstance(bulk_result.get("total"), int)
+            ):
+                scheduled_publication_types.append(kind)
+            if not publication_accepted:
                 model_name = {
                     "point_of_interest": "PointOfInterest",
                     "dataset": "Dataset",
@@ -505,6 +766,14 @@ class TimeAtlasImportClient:
                         max_workers=publication_workers,
                     )
                 )
+        if scheduled_publication_types:
+            self.wait_for_publications(
+                import_id,
+                scheduled_publication_types,
+                visibility,
+                timeout=workflow_timeout,
+                poll_interval=poll_interval,
+            )
         unique_events = {
             event.get("id", ("without-id", index)): event
             for index, event in enumerate(

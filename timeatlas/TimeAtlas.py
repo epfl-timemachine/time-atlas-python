@@ -234,6 +234,18 @@ class RDEEnvelopeWriter:
             path = self.output_dir / path
         return path
 
+    def _target_path_with_suffix(
+        self,
+        filename: str | os.PathLike,
+        suffix: str,
+    ) -> Path:
+        path = Path(filename)
+        if path.suffix != suffix:
+            path = path.with_suffix(suffix)
+        if not path.is_absolute():
+            path = self.output_dir / path
+        return path
+
     def _creation_time(self, creation_time: str | None = None) -> str:
         return creation_time if creation_time is not None else datetime.now().isoformat()
 
@@ -409,6 +421,64 @@ class RDEEnvelopeWriter:
         flush()
         return paths
 
+    def write_jsonl_batches_by_size(
+        self,
+        filename_prefix: str,
+        objects: Iterable[RDE | dict],
+        max_size_bytes: int,
+        *,
+        start_index: int = 1,
+        overwrite: bool | None = None,
+    ) -> list[Path]:
+        """Write objects as JSONL files, splitting batches near ``max_size_bytes``.
+
+        Each object is written as one line of UTF-8 encoded JSON terminated by a
+        newline. Objects larger than ``max_size_bytes`` are still written one per
+        file.
+        """
+        if max_size_bytes <= 0:
+            raise ValueError('max_size_bytes must be greater than 0')
+
+        should_overwrite = self.overwrite if overwrite is None else overwrite
+        prefix_path = Path(filename_prefix)
+        prefix_stem = prefix_path.stem if prefix_path.suffix else prefix_path.name
+
+        def batch_path(batch_index: int) -> Path:
+            path = prefix_path.parent / f'{prefix_stem}_{batch_index}.jsonl'
+            return self._target_path_with_suffix(path, '.jsonl')
+
+        paths: list[Path] = []
+        batch_lines: list[str] = []
+        batch_bytes = 0
+        index = start_index
+
+        def flush() -> None:
+            nonlocal batch_lines, batch_bytes, index
+            if not batch_lines:
+                return
+            path = batch_path(index)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and not should_overwrite:
+                raise FileExistsError(f'{path} already exists')
+            with path.open('w', encoding='utf-8') as f:
+                f.writelines(batch_lines)
+            paths.append(path)
+            batch_lines = []
+            batch_bytes = 0
+            index += 1
+
+        for obj in objects:
+            serialized = self.serialize_object(obj)
+            line = json.dumps(serialized, ensure_ascii=False, cls=_ShapelyEncoder) + '\n'
+            line_size = len(line.encode('utf-8'))
+            if batch_lines and batch_bytes + line_size > max_size_bytes:
+                flush()
+            batch_lines.append(line)
+            batch_bytes += line_size
+
+        flush()
+        return paths
+
 
 class RDECollection:
     """A collection of Research Data Entities (RDE) ready for file-based serialization.
@@ -483,6 +553,39 @@ class RDECollection:
         else:
             self.rdes.append(rdes)
 
+    def _serialization_groups(
+        self,
+        rde_types: Iterable[type[RDE]] | None = None,
+    ) -> dict[type[RDE], list[RDE]]:
+        """Group supported entities in the stable order defined by ``_FILE_MAP``."""
+        allowed = (
+            set(rde_types)
+            if rde_types is not None
+            else set(self._FILE_MAP)
+        )
+        groups: dict[type[RDE], list[RDE]] = {
+            cls: [] for cls in self._FILE_MAP if cls in allowed
+        }
+        for rde in self.rdes:
+            group = groups.get(type(rde))
+            if group is not None:
+                group.append(rde)
+        return {cls: group for cls, group in groups.items() if group}
+
+    def _serialization_dataset_slugs(
+        self,
+        dataset_slug: str | None,
+    ) -> list[str] | None:
+        """Resolve an explicit or unambiguous dataset slug for envelope headers."""
+        if dataset_slug is not None:
+            return [dataset_slug]
+        inferred = sorted({
+            rde.slug
+            for rde in self.rdes
+            if isinstance(rde, Dataset) and rde.slug
+        })
+        return inferred if len(inferred) == 1 else None
+
     def save_rde_to_files(self, output_dir: str, overwrite: bool = False, rde_types: list[type] | None = None, dataset_slug: str | None = None) -> None:
         """Serialize the collection's RDE entities to individual JSON files grouped by type.
 
@@ -525,27 +628,8 @@ class RDECollection:
         """
         os.makedirs(output_dir, exist_ok=True)
 
-        allowed: set[type] = set(rde_types) if rde_types is not None else set(self._FILE_MAP.keys())
-
-        # Group RDEs by concrete class, skipping unknown types and those not in the filter
-        groups: dict[type, list[RDE]] = {}
-        for rde in self.rdes:
-            cls = type(rde)
-            if cls in self._FILE_MAP and cls in allowed:
-                groups.setdefault(cls, []).append(rde)
-
-        inferred_dataset_slugs = sorted({
-            rde.slug
-            for rde in self.rdes
-            if isinstance(rde, Dataset) and rde.slug
-        })
-        related_dataset_slugs = (
-            [dataset_slug]
-            if dataset_slug is not None
-            else inferred_dataset_slugs
-            if len(inferred_dataset_slugs) == 1
-            else None
-        )
+        groups = self._serialization_groups(rde_types)
+        related_dataset_slugs = self._serialization_dataset_slugs(dataset_slug)
 
         for cls, rde_group in groups.items():
             filename, type_label = self._FILE_MAP[cls]
@@ -578,8 +662,88 @@ class RDECollection:
                 related_dataset_slugs=slugs,
             )
 
+    def save_rde_to_jsonl(
+        self,
+        output_file: str | os.PathLike,
+        overwrite: bool = False,
+        rde_types: Iterable[type[RDE]] | None = None,
+        dataset_slug: str | None = None,
+    ) -> Path:
+        """Serialize all selected RDE types into one envelope-per-line JSONL package.
+
+        Every non-empty type group becomes one compact JSON object on one physical
+        line. Each line has the same envelope shape as a file produced by
+        :meth:`save_rde_to_files`, including ``related_dataset_slugs`` for
+        dataset-scoped resources. Envelope headers are written before
+        ``rde_objects`` so a streaming backend can index the package safely.
+
+        Args:
+            output_file: Destination filename. A ``.jsonl`` suffix is added when
+                necessary.
+            overwrite: Replace an existing package when ``True``. Defaults to
+                ``False``.
+            rde_types: Optional iterable of concrete RDE classes to include.
+            dataset_slug: Optional explicit related dataset slug. When omitted,
+                the only dataset slug in the collection is inferred.
+
+        Returns:
+            The path of the JSONL package.
+
+        Raises:
+            FileExistsError: If the destination exists and ``overwrite`` is
+                ``False``.
+        """
+        path = Path(output_file)
+        if path.suffix != '.jsonl':
+            path = path.with_suffix('.jsonl')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and not overwrite:
+            raise FileExistsError(f'{path} already exists')
+
+        groups = self._serialization_groups(rde_types)
+        related_dataset_slugs = self._serialization_dataset_slugs(dataset_slug)
+        compact_json = {
+            'ensure_ascii': False,
+            'separators': (',', ':'),
+            'cls': _ShapelyEncoder,
+        }
+
+        with path.open('w', encoding='utf-8') as f:
+            for cls, rde_group in groups.items():
+                name, type_label = self._FILE_MAP[cls]
+                header = {
+                    'name': name,
+                    'type_in_file': [type_label],
+                    'creation_time': datetime.now().isoformat(),
+                }
+                if (
+                    cls in self._DATASET_TIED_TYPES
+                    and related_dataset_slugs is not None
+                ):
+                    header['related_dataset_slugs'] = related_dataset_slugs
+
+                # Remove the closing brace, append the streamed object array, and
+                # close the envelope. This keeps even very large type groups on a
+                # single physical line without materializing the complete line.
+                f.write(json.dumps(header, **compact_json)[:-1])
+                f.write(',"rde_objects":[')
+                for index, rde in enumerate(rde_group):
+                    if index:
+                        f.write(',')
+                    f.write(json.dumps(
+                        RDEEnvelopeWriter.serialize_object(rde),
+                        **compact_json,
+                    ))
+                f.write(']}\n')
+
+        return path
+
     @classmethod
-    def read_rde_from_files(cls, input_dir: str) -> 'RDECollection':
+    def read_rde_from_files(
+        cls,
+        input_dir: str,
+        rde_types: Iterable[type[RDE]] | None = None,
+    ) -> 'RDECollection':
         """Deserialize RDE entities from JSON files produced by :meth:`save_rde_to_files`.
 
         Scans *input_dir* for ``.json`` files, reads each envelope, and reconstructs
@@ -593,6 +757,10 @@ class RDECollection:
 
         Args:
             input_dir: Path to the directory containing the serialized ``.json`` files.
+            rde_types: Optional iterable of concrete RDE classes to deserialize.
+                Files containing other entity types are skipped before their objects
+                are constructed, which is useful when combining several production
+                directories that contain overlapping or very large files.
 
         Returns:
             A new :class:`RDECollection` populated with all successfully deserialized
@@ -603,6 +771,7 @@ class RDECollection:
             json.JSONDecodeError: If a file contains malformed JSON.
         """
         rdes: list[RDE] = []
+        allowed_types = set(rde_types) if rde_types is not None else None
         for entry in os.scandir(input_dir):
             if not (entry.is_file() and entry.name.endswith('.json')):
                 continue
@@ -614,7 +783,9 @@ class RDECollection:
                     # GeoJSON Feature objects (e.g. Geometry) nest rde_type under properties
                     rde_type = obj['properties'].get('rde_type')
                 rde_class = RDE_TYPE_TO_STATIC_CLASS_DEF.get(rde_type)
-                if rde_class is None:
+                if rde_class is None or (
+                    allowed_types is not None and rde_class not in allowed_types
+                ):
                     continue
                 rdes.append(rde_class.constructor_from_json_obj(obj))
         return cls(rdes)

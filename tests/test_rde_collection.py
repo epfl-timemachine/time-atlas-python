@@ -10,6 +10,7 @@ from shapely.geometry import Point, Polygon
 
 from timeatlas import (
     Area,
+    Dataset,
     Geometry,
     HistoricalRecord,
     Map,
@@ -161,6 +162,78 @@ def test_collection_save_filters_types_and_skips_unknown_rdes(tmp_path, entity_g
     }
 
 
+def test_collection_save_jsonl_matches_individual_envelopes(
+    tmp_path, entity_graph, monkeypatch
+):
+    class FixedDateTime:
+        @staticmethod
+        def now():
+            return datetime(2026, 7, 23, 12, 0, 0)
+
+    monkeypatch.setattr(timeatlas_module, "datetime", FixedDateTime)
+    collection = RDECollection(entity_graph["all"])
+    individual_dir = tmp_path / "individual"
+    collection.save_rde_to_files(str(individual_dir))
+
+    package = collection.save_rde_to_jsonl(tmp_path / "package")
+    lines = package.read_text(encoding="utf-8").splitlines()
+    packaged_envelopes = [json.loads(line) for line in lines]
+    individual_envelopes = {
+        path.stem: json.loads(path.read_text(encoding="utf-8"))
+        for path in individual_dir.glob("*.json")
+    }
+
+    assert package.name == "package.jsonl"
+    assert len(lines) == len(individual_envelopes)
+    assert {envelope["name"] for envelope in packaged_envelopes} == set(
+        individual_envelopes
+    )
+    for envelope in packaged_envelopes:
+        assert envelope == individual_envelopes[envelope["name"]]
+
+
+def test_collection_save_jsonl_filters_types_and_checks_overwrite(
+    tmp_path, entity_graph
+):
+    collection = RDECollection(entity_graph["all"])
+    package = collection.save_rde_to_jsonl(
+        tmp_path / "selected.jsonl",
+        rde_types=[Dataset, Observation],
+        dataset_slug="selected",
+    )
+    envelopes = [
+        json.loads(line)
+        for line in package.read_text(encoding="utf-8").splitlines()
+    ]
+
+    assert [envelope["name"] for envelope in envelopes] == [
+        "observations",
+        "dataset",
+    ]
+    assert all(
+        envelope["related_dataset_slugs"] == ["selected"]
+        for envelope in envelopes
+    )
+    with pytest.raises(FileExistsError):
+        collection.save_rde_to_jsonl(package)
+    assert collection.save_rde_to_jsonl(package, overwrite=True) == package
+
+
+def test_collection_read_filters_types_before_deserialization(tmp_path, entity_graph):
+    RDECollection(entity_graph["all"]).save_rde_to_files(str(tmp_path))
+
+    restored = RDECollection.read_rde_from_files(
+        str(tmp_path),
+        rde_types=[Map, Observation],
+    )
+
+    assert {type(item) for item in restored.rdes} == {Map, Observation}
+    assert {item.id for item in restored.rdes} == {
+        entity_graph["map"].id,
+        entity_graph["observation"].id,
+    }
+
+
 def test_envelope_writer_writes_dicts_and_rdes(tmp_path, entity_graph):
     writer = RDEEnvelopeWriter(tmp_path)
     path = writer.write(
@@ -230,6 +303,48 @@ def test_envelope_writer_validates_objects_sizes_and_existing_files(tmp_path):
     with pytest.raises(ValueError, match="max_size_bytes"):
         writer.write_batches_by_size("batch", [], None, "dataset", 0)
     assert writer.write_batches_by_size("batch", [], None, "dataset", 100) == []
+
+
+def test_envelope_writer_writes_jsonl_batches_by_size(tmp_path, entity_graph):
+    writer = RDEEnvelopeWriter(tmp_path)
+    objects = []
+    for index in range(10):
+        geom = copy.deepcopy(entity_graph["geometry"])
+        geom.id = uid(300 + index)
+        objects.append(geom)
+
+    paths = writer.write_jsonl_batches_by_size(
+        "iiif/manifests",
+        objects,
+        max_size_bytes=350,
+        start_index=1,
+    )
+
+    assert len(paths) > 1
+    assert paths[0].name == "manifests_1.jsonl"
+    assert all(path.suffix == ".jsonl" for path in paths)
+    for path in paths:
+        assert path.stat().st_size <= 350
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
+        assert lines
+        for line in lines:
+            obj = json.loads(line)
+            assert obj["geometry"]["type"] == "Polygon"
+
+
+def test_envelope_writer_jsonl_validates_size_and_overwrite(tmp_path):
+    writer = RDEEnvelopeWriter(tmp_path)
+    with pytest.raises(ValueError, match="max_size_bytes"):
+        writer.write_jsonl_batches_by_size("manifests", [{"id": uid(1)}], 0)
+
+    writer.write_jsonl_batches_by_size("manifests", [{"id": uid(1)}], 100)
+    with pytest.raises(FileExistsError):
+        writer.write_jsonl_batches_by_size(
+            "manifests",
+            [{"id": uid(2)}],
+            100,
+            overwrite=False,
+        )
 
 
 def test_collection_read_ignores_non_json_unknown_and_empty_envelopes(tmp_path):

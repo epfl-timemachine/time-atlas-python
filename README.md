@@ -103,6 +103,28 @@ result = client.run_collection_workflow(collection, "output/dataset-slug")
 print(result.import_data["uuid"], result.import_data["status"])
 ```
 
+To upload the complete collection as one mixed JSONL package, select the JSONL
+format. Each line is a complete RDE envelope equivalent to one of the traditional
+per-type JSON files:
+
+```python
+result = client.run_collection_workflow(
+    collection,
+    "output/dataset-slug",
+    rde_format="jsonl",
+    rde_jsonl_filename="dataset-slug.jsonl",
+)
+```
+
+The serializer can also be used without starting an import:
+
+```python
+package = collection.save_rde_to_jsonl(
+    "output/dataset-slug.jsonl",
+    overwrite=True,
+)
+```
+
 For local scripts, `TimeAtlasImportClient.from_credentials_file(...)` accepts a
 file with `TOKEN=...` and `TEAM_ID=...` lines.
 
