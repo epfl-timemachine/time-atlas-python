@@ -141,6 +141,18 @@ def test_svg_selector_template_contains_svg_path():
     assert "<path" in template["selector"]["value"]
 
 
+def test_svg_selector_preserves_all_polygons():
+    template = Selector(
+        SelectorType.SVG,
+        [[(0, 0), (1, 0), (1, 1)], [(10, 10), (11, 10), (11, 11)]],
+        "canvas",
+    ).generate_selector_template()
+    svg = template["selector"]["value"]
+    assert svg.count("<path") == 2
+    assert "M0,0" in svg and "M10,10" in svg
+    assert svg.count(" Z") == 2
+
+
 @pytest.mark.parametrize(
     ("selector_type", "value", "message"),
     [

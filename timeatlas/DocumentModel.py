@@ -9,30 +9,56 @@ from pandas.core.indexes.multi import MultiIndex
 import pandas as pd
 from PIL import Image
 
-def int_tuple_list_to_svg_string(tpl: list[tuple[int,int]]) -> str:
-    """Convert a list of integer coordinate tuples to an SVG path string.
-    
+def int_tuple_list_to_svg_string(tpl: list[tuple[int, int]] | list[list[tuple[int, int]]]) -> str:
+    """Convert one or more coordinate polygons to an SVG selector string.
+
     Args:
-        tpl: List of (x, y) coordinate tuples defining a closed polygon path.
-        
+        tpl: A polygon as ``[(x, y), ...]`` or multiple polygons as
+            ``[[(x, y), ...], ...]``. Every polygon is rendered separately so
+            a multi-polygon selector never loses its component regions.
+
     Returns:
-        SVG string with a closed path element.
-        
+        SVG string with one closed path element per polygon.
+
     Example:
         >>> int_tuple_list_to_svg_string([(270, 1900), (1530, 1900), (1530, 1610)])
         "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink'><g><path d='M270,1900 L1530,1900 L1530,1610 L270,1900' /></g></svg>"
-        
+
     Note:
         Understanding the SVG path command: https://developer.mozilla.org/en-US/docs/Web/SVG/Tutorial/Paths
     """
-    # example: "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink'><g><path d='M270.000000,1900.000000 L1530.000000,1900.000000 L1530.000000,1610.000000 L1315.000000,1300.000000 L1200.000000,986.000000 L904.000000,661.000000 L600.000000,986.000000 L500.000000,1300.000000 L270,1630 L270.000000,1900.000000' /></g></svg>"
     if not tpl:
         raise ValueError("At least one coordinate is required to generate an SVG path")
-    svg_preample = "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink'><g>"
-    path_preample = f"<path d='M{tpl[0][0]},{tpl[0][1]}"
-    path_body = ' '.join([f'L{v[0]},{v[1]}' for v in tpl[1:]])
-    path_body += f' L{tpl[0][0]},{tpl[0][1]}'
-    return svg_preample + path_preample + path_body + "' /></g></svg>"
+    first = tpl[0]
+    is_coordinate = (
+        isinstance(first, (tuple, list))
+        and len(first) == 2
+        and all(isinstance(value, (int, float)) for value in first)
+    )
+    polygons = [tpl] if is_coordinate else tpl
+
+    paths = []
+    for polygon in polygons:
+        if not polygon:
+            raise ValueError("SVG polygons must contain at least one coordinate")
+        if not all(
+            isinstance(point, (tuple, list))
+            and len(point) == 2
+            and all(isinstance(value, (int, float)) for value in point)
+            for point in polygon
+        ):
+            raise ValueError("SVG polygons must contain numeric (x, y) coordinates")
+        path = f"M{polygon[0][0]},{polygon[0][1]}"
+        path += " ".join(f"L{point[0]},{point[1]}" for point in polygon[1:])
+        path += f" L{polygon[0][0]},{polygon[0][1]} Z"
+        paths.append(f"<path d='{path}' />")
+
+    return (
+        "<svg xmlns='http://www.w3.org/2000/svg' "
+        "xmlns:xlink='http://www.w3.org/1999/xlink'><g>"
+        + "".join(paths)
+        + "</g></svg>"
+    )
 
 def multiindex_to_nested_dict(df: pd.DataFrame) -> OrderedDict:
     """Convert a DataFrame with MultiIndex to a nested OrderedDict.
@@ -243,7 +269,7 @@ class Selector():
     Raises:
         ValueError: If value format doesn't match the selector type requirements.
     """
-    def __init__(self, tpe:SelectorType, value: (tuple[int,int] | list[tuple[int,int]] | tuple[int,int,int,int]), source:str):
+    def __init__(self, tpe:SelectorType, value: (tuple[int,int] | list[tuple[int,int]] | list[list[tuple[int,int]]] | tuple[int,int,int,int]), source:str):
         self.type = tpe
         self.value = value
         self.source = source
@@ -251,8 +277,10 @@ class Selector():
             raise ValueError('Point selector should have 2 values')
         if self.type is SelectorType.XYWH and len(self.value) != 4:
             raise ValueError('XYWH selector should have 4 values')
-        if self.type is SelectorType.SVG and type(self.value) != list:
-            raise ValueError('SVG selector should be a list of number')
+        if self.type is SelectorType.SVG:
+            if not isinstance(self.value, list) or not self.value:
+                raise ValueError('SVG selector should be a non-empty list of coordinates or polygons')
+            int_tuple_list_to_svg_string(self.value)
 
     def generate_selector_template(self) -> dict:
         """Generate Web Annotation selector JSON structure.
