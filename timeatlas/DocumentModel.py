@@ -439,6 +439,55 @@ class Page(UUIDEntity, RDE):
     width: int
     object_ref: str | FileReference
     annotations: Optional[list[Annotation]] = None
+    image_url: Optional[str] = None
+    image_service_url: Optional[str] = None
+    image_service_type: str = "ImageService3"
+    image_service_profile: str = "level2"
+    thumbnail_url: Optional[str] = None
+
+    def image_body(self, url_prefix: str = "") -> dict:
+        """Render an image, preserving explicit external URLs byte for byte.
+
+        ``object_ref`` remains the legacy path relative to ``url_prefix``.
+        For external images set ``image_url`` and, when available, the image
+        service URL/type/profile. An external image without a service is also
+        a valid painting body; no service capabilities are inferred here.
+        """
+        if isinstance(self.object_ref, FileReference):
+            raise ValueError('Cannot generate IIIF manifest for a page with a file object reference, only string path is supported')
+        service_url = self.image_service_url
+        if self.image_url:
+            image_url = self.image_url
+        else:
+            if service_url:
+                raise ValueError("An external image_service_url requires image_url")
+            service_url = url_encoded_iiif_image_url(url_prefix, self.object_ref)
+            image_url = f"{service_url}/full/max/0/default.jpg"
+        body = {
+            "id": image_url,
+            "type": "Image",
+            "format": self.format,
+            "height": self.height,
+            "width": self.width,
+        }
+        if service_url:
+            version_two = self.image_service_type == "ImageService2"
+            profile = self.image_service_profile
+            if version_two and profile in {"level0", "level1", "level2"}:
+                profile = f"http://iiif.io/api/image/2/{profile}.json"
+            body["service"] = [{
+                "@id" if version_two else "id": service_url,
+                "@type" if version_two else "type": self.image_service_type,
+                "profile": profile,
+            }]
+        return body
+
+    def image_thumbnail(self, url_prefix: str = "") -> dict:
+        """Use an explicit external image without inventing a resize request."""
+        image_url = self.thumbnail_url or self.image_url
+        if not image_url:
+            image_url = f"{url_encoded_iiif_image_url(url_prefix, self.object_ref)}/full/300,/0/default.jpg"
+        return {"id": image_url, "type": "Image"}
 
     def to_iiif(self, uuid_manager: UUIDManager, url_prefix: str) -> dict:
         """Convert page to IIIF Presentation API Canvas format.
@@ -458,7 +507,6 @@ class Page(UUIDEntity, RDE):
         if isinstance(self.object_ref, FileReference):
             raise ValueError('Cannot generate IIIF manifest for a page with a file object reference, only string path is supported')
         
-        url_encoded = url_encoded_iiif_image_url(url_prefix, self.object_ref)
         page_id = self.id
         if isinstance(page_id, tuple) or isinstance(page_id, list):
             # we're in the case were there is an external resource in the id.
@@ -480,20 +528,7 @@ class Page(UUIDEntity, RDE):
                         "id": uuid_manager._generate_uuid(annot_page_idx),
                         "type": "Annotation",
                         "motivation": "painting",
-                        "body": {
-                            "id": f"{url_encoded}/full/max/0/default.jpg",
-                            "type": "Image",
-                            "format": self.format,
-                            "height": self.height,
-                            "width": self.width,
-                            "service": [
-                            {
-                                "id": url_encoded,
-                                "type": "ImageService3",
-                                "profile": "level2"
-                            }
-                            ]
-                        },
+                        "body": self.image_body(url_prefix),
                         "target": page_id
                         }
                     ]
@@ -516,7 +551,7 @@ class Page(UUIDEntity, RDE):
         Returns:
             Dictionary containing page attributes.
         """
-        return {
+        result = {
             "id": self.id,
             "label": self.label.values,
             "format": self.format,
@@ -526,6 +561,15 @@ class Page(UUIDEntity, RDE):
             "object_ref": self.object_ref if isinstance(self.object_ref, str) else self.object_ref.path_name,
             "annotations": [annotation.__dict__ for annotation in self.annotations] if self.annotations else None
         }
+        if self.image_url:
+            result.update({
+                "image_url": self.image_url,
+                "image_service_url": self.image_service_url,
+                "image_service_type": self.image_service_type,
+                "image_service_profile": self.image_service_profile,
+                "thumbnail_url": self.thumbnail_url,
+            })
+        return result
 
 
 @dataclass
@@ -607,6 +651,7 @@ class Document(UUIDEntity, RDE):
     label: MultiLingualValue
     items: list[Page | Model]
     structures: Optional[dict] = None
+    presentation_metadata: Optional[dict] = None
 
     def to_iiif(self, uuid_manager: UUIDManager,  url_prefix: str, presentation_version:str = '3') -> dict:
         """Convert document to IIIF Presentation API Manifest format.
@@ -626,7 +671,7 @@ class Document(UUIDEntity, RDE):
             "id": self.id,
             "type": "Manifest",
             "label": self.label.values,
-            "thumbnail": [{
+            "thumbnail": [first_page.image_thumbnail(url_prefix) if isinstance(first_page, Page) else {
                 "id": f"{url_encoded_iiif_image_url(url_prefix, first_page.object_ref)}/full/300,/0/default.jpg",
                 "type": "Image"
             }
@@ -635,6 +680,12 @@ class Document(UUIDEntity, RDE):
         }
         if self.structures:
             man['structures'] = [self.structures]
+        if self.presentation_metadata:
+            # Preserve source rights statements without allowing supplied
+            # metadata to replace generated identifiers, canvases or labels.
+            for key in ("rights", "requiredStatement"):
+                if key in self.presentation_metadata:
+                    man[key] = self.presentation_metadata[key]
         return man
     
     def to_iiif_manifest_item(self, url_prefix: str, with_thumbnail: bool = True) -> dict:
@@ -654,7 +705,7 @@ class Document(UUIDEntity, RDE):
             "id": self.id,
             "type": "Manifest",
             "label": self.label.values,
-            "thumbnail": [{
+            "thumbnail": [first_page.image_thumbnail(url_prefix) if isinstance(first_page, Page) else {
                 "id": f"{url_encoded_iiif_image_url(url_prefix, first_page.object_ref)}/full/300,/0/default.jpg",
                 "type": "Image"
             }] if with_thumbnail else [],
