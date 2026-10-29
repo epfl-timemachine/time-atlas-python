@@ -329,3 +329,102 @@ def test_manifest_image_and_service_pair_can_have_one_canonical_identifier(confi
     row = normalize_source_manifests(source, config)[0]
     assert row["image_url"] == "https://images.test/iiif/3/book%2F001.tif/full/max/0/default.jpg?download=1"
     assert row["image_service_url"] == body["service"][0]["id"]
+
+
+@pytest.mark.parametrize("mutation,message", [
+    (lambda m: m.pop("id"), "Manifest is missing its identifier"),
+    (lambda m: m.update(items=[]), "at least one embedded canvas"),
+    (lambda m: m.update(items=["https://source.test/canvas"]), "Only embedded Canvas"),
+    (lambda m: m.update(type="sc:Manifest"), "Only Presentation API 2 and 3"),
+    (lambda m: m.update(label={"@value": 12}), "invalid value"),
+    (lambda m: m.update(label={"en": [None]}), "invalid language map"),
+    (lambda m: m.update(label=42), "Unsupported source label"),
+    (lambda m: m.update(rights=["https://rights.test/a", "https://rights.test/b"]), "Multiple source license"),
+    (lambda m: m.update(requiredStatement={"label": {"en": ["Credit"]}}), "Invalid source requiredStatement"),
+    (lambda m: m["items"][0].update(items=[]), "no embedded annotation pages"),
+    (lambda m: m["items"][0]["items"][0].update(items=[None]), "Invalid source annotation"),
+    (lambda m: first_painting(m).update(motivation="commenting"), "exactly one painting"),
+    (lambda m: first_painting(m).update(type="Other"), "not an Annotation"),
+    (lambda m: first_painting(m).update(target=[]), "target exactly one complete canvas"),
+    (lambda m: first_painting(m).update(target={"id": m["items"][0]["id"], "selector": {"type": "FragmentSelector"}}), "Partial-canvas"),
+    (lambda m: first_painting(m).update(target={"type": "Canvas"}), "Painting target is missing"),
+    (lambda m: first_painting(m)["body"][0]["service"][0].update(id="https://images.test/info.json"), "identify its root"),
+    (lambda m: first_painting(m)["body"][0]["service"][0].update(profile=[]), "one supported compliance profile"),
+    (lambda m: first_painting(m)["body"][0]["service"][0].update(profile="level9"), "Only level0"),
+    (lambda m: first_painting(m)["body"][0]["service"][0].update(profile="http://iiif.io/api/image/2/level2.json"), "conflicting API versions"),
+])
+def test_malformed_manifest_metadata_and_paintings_have_actionable_errors(config, mutation, message):
+    source = manifest3(pages=(4,))
+    mutation(source)
+    original = copy.deepcopy(source)
+    with pytest.raises(SourceInventoryError, match=message):
+        normalize_source_manifests(source, config)
+    assert source == original
+
+
+def test_manifest_input_and_join_configuration_errors(config, tmp_path):
+    with pytest.raises(SourceInventoryError, match="at least one source manifest"):
+        normalize_source_manifests([], config)
+    with pytest.raises(SourceInventoryError, match="Choose a manifest join field"):
+        normalize_source_manifests(manifest3(), {})
+    for name, content in [("missing.json", None), ("invalid.json", "{not json")]:
+        path = tmp_path / name
+        if content is not None:
+            path.write_text(content)
+        with pytest.raises(SourceInventoryError, match="Cannot read source manifest"):
+            normalize_source_manifests(path, config)
+
+
+def test_presentation2_requires_embedded_image_annotations(config):
+    source = manifest2()
+    source["sequences"][0]["canvases"][0]["images"] = "https://source.test/annotations"
+    with pytest.raises(SourceInventoryError, match="no image annotations"):
+        normalize_source_manifests(source, config)
+
+
+def test_valid_target_objects_and_unrelated_annotations_preserve_painting(config):
+    source = manifest3(pages=(4,))
+    canvas = source["items"][0]
+    painting = first_painting(source)
+    painting["target"] = {"id": canvas["id"], "type": "Canvas"}
+    painting["body"] = painting["body"][0]
+    canvas["items"][0]["items"].insert(0, {
+        "type": "Annotation", "motivation": "commenting", "body": "A note",
+    })
+    rows = normalize_source_manifests(source, config)
+    assert len(rows) == 1
+    assert rows[0]["canvas_id"] == canvas["id"]
+    assert rows[0]["image_url"] == painting["body"]["id"]
+
+
+def test_manifest_without_rights_uses_id_label_fallback(config):
+    source = manifest3(pages=(4,))
+    for key in ("rights", "requiredStatement", "label"):
+        del source[key]
+    row = normalize_source_manifests(source, config)[0]
+    assert row["source_manifest_metadata"] == {}
+    assert row["manifest_labels"] == {"none": [source["id"]]}
+
+
+def test_repeated_language_labels_and_single_license_are_preserved(config):
+    source = manifest2()
+    source["label"] = [
+        {"@language": "en", "@value": "Book"},
+        {"@language": "en", "@value": "Volume I"},
+        {"@value": "Untitled translation"},
+    ]
+    source["license"] = [source["license"]]
+    row = normalize_source_manifests(source, config)[0]
+    assert row["manifest_labels"] == {"en": ["Book", "Volume I"], "none": ["Untitled translation"]}
+    assert row["source_manifest_metadata"]["rights"] == source["license"][0]
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_service_version_can_be_inferred_from_advertised_context(config, version):
+    source = manifest3(pages=(4,))
+    service = first_painting(source)["body"][0]["service"][0]
+    del service["type"]
+    service["@context"] = f"http://iiif.io/api/image/{version}/context.json"
+    row = normalize_source_manifests(source, config)[0]
+    assert row["image_service_type"] == f"ImageService{version}"
+    assert row["image_service_profile"] == "level1"

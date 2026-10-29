@@ -214,3 +214,115 @@ def test_url_and_text_size_limits():
         plan_source_image_urls([image_url(number) for number in range(10001)])
     with pytest.raises(SourceInventoryError, match="2 MiB"):
         plan_source_image_urls(["https://example.test/" + "a" * (2 * 1024 * 1024)])
+
+
+def test_multiline_url_text_preserves_nonempty_line_order():
+    urls = [image_url(2), image_url(1)]
+    plan = plan_source_image_urls(urls[0] + "\n\n" + urls[1] + "\n")
+    assert [row["image_url"] for row in plan] == urls
+    assert [row["source_position"] for row in plan] == [1, 2]
+
+
+@pytest.mark.parametrize("urls,message", [
+    ([], "image URL list is empty"),
+    ([image_url(), None], "Every image URL must be a string"),
+    ([image_url(format="bmp")], "Image URL 1: Unsupported requested image format"),
+])
+def test_invalid_url_lists_fail_before_metadata_download(urls, message):
+    with pytest.raises(SourceInventoryError, match=message):
+        plan_source_image_urls(urls)
+
+
+@pytest.mark.parametrize("kind,message", [
+    ("missing", "Cannot read the UTF-8 image URL list"),
+    ("invalid-utf8", "Cannot read the UTF-8 image URL list"),
+    ("oversized", "2 MiB"),
+])
+def test_unreadable_or_oversized_url_files_are_reported(tmp_path, kind, message):
+    path = tmp_path / "images.txt"
+    if kind == "invalid-utf8":
+        path.write_bytes(b"\xff")
+    elif kind == "oversized":
+        path.write_bytes(b" " * (2 * 1024 * 1024 + 1))
+    with pytest.raises(SourceInventoryError, match=message):
+        plan_source_image_urls(path)
+
+
+@pytest.mark.parametrize("item", [None, {}, {"infoUrl": 42}])
+def test_snapshot_requires_requested_info_url(config, item):
+    with pytest.raises(SourceInventoryError, match="Each info snapshot must identify"):
+        normalize_source_image_urls([image_url()], [item], config)
+
+
+@pytest.mark.parametrize("kind,message", [
+    ("missing-path", "Cannot read an info.json snapshot"),
+    ("missing-file", "Cannot read an info.json snapshot"),
+    ("invalid-json", "Cannot read an info.json snapshot"),
+    ("invalid-utf8", "Cannot read an info.json snapshot"),
+    ("not-object", "must contain a JSON object"),
+])
+def test_bad_metadata_snapshots_keep_image_position_in_errors(config, tmp_path, kind, message):
+    url = image_url()
+    item = snapshot(url)
+    if kind == "not-object":
+        item["info"] = []
+    else:
+        del item["info"]
+        if kind != "missing-path":
+            path = tmp_path / "info.json"
+            item["path"] = str(path)
+            if kind == "invalid-json":
+                path.write_text("{broken")
+            elif kind == "invalid-utf8":
+                path.write_bytes(b"\xff")
+    with pytest.raises(SourceInventoryError) as error:
+        normalize_source_image_urls([url], [item], config)
+    assert str(error.value).startswith("Image URL 1: ")
+    assert message in str(error.value)
+
+
+@pytest.mark.parametrize("change,message", [
+    (lambda s: s["info"].update(id=s["serviceUrl"] + "#fragment"), "must not contain fragments"),
+    (lambda s: s.update(finalUrl="https://cdn.test/metadata"), "must end in /info.json"),
+    (lambda s: s["info"].update(protocol="https://other.test/protocol"), "different protocol"),
+    (lambda s: s["info"].update(extraFormats="webp"), "invalid format declaration"),
+    (lambda s: s["info"].update(extraFormats=[1]), "invalid format declaration"),
+    (lambda s: s.update(finalUrl="https://images.test:invalid/book/info.json"), "invalid port"),
+    (lambda s: (s["info"].update(id="https://images.test/"), s.update(finalUrl="https://images.test//info.json")), "no identifier basename"),
+])
+def test_invalid_service_metadata_has_specific_errors(config, change, message):
+    url = image_url()
+    item = snapshot(url)
+    change(item)
+    with pytest.raises(SourceInventoryError, match=message):
+        normalize_source_image_urls([url], [item], config)
+
+
+def test_unredirected_snapshot_and_explicit_order_field_preserve_config(config):
+    import copy
+
+    urls = [image_url(2), image_url(1)]
+    snapshots = [snapshot(url) for url in urls]
+    for item in snapshots:
+        item.pop("finalUrl")
+    config["ordering"] = {"mode": "numeric", "field": "source_position"}
+    config["recordLink"].pop("imageJoinField")
+    original = copy.deepcopy(config)
+    rows = normalize_source_image_urls(urls, snapshots, config)
+    assert [row["image_url"] for row in rows] == urls
+    assert [row["image_join_key"] for row in rows] == ["2", "1"]
+    assert config == original
+
+
+@pytest.mark.parametrize("settings", [
+    {"columns": {"label": "unknown"}},
+    {"grouping": {"mode": "field", "field": "unknown"}},
+    {"grouping": {"mode": "field", "field": "image_directory", "labelField": "unknown"}},
+    {"ordering": {"mode": "natural", "field": "unknown"}},
+    {"recordLink": {"imageJoinField": "unknown"}},
+])
+def test_url_list_mappings_reject_unavailable_columns(config, settings):
+    config.update(settings)
+    url = image_url()
+    with pytest.raises(SourceInventoryError, match="documented derived field"):
+        normalize_source_image_urls([url], [snapshot(url)], config)

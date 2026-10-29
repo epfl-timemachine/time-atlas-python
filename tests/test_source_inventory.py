@@ -223,3 +223,203 @@ def test_service_capabilities_must_be_explicit(config):
     del config["imageService"]
     with pytest.raises(SourceInventoryError, match="Image API version"):
         normalize_source_inventory([source_row(1)], config)
+
+
+@pytest.mark.parametrize("kind", ["csv", "json", "dataframe", "generator"])
+def test_inventory_input_formats_preserve_rows(config, tmp_path, kind):
+    import csv
+    import pandas as pd
+
+    rows = [source_row(2), source_row(1)]
+    if kind == "csv":
+        source = tmp_path / "images.csv"
+        with source.open("w", encoding="utf-8-sig", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+    elif kind == "json":
+        source = tmp_path / "images.json"
+        source.write_text(json.dumps(rows), encoding="utf-8-sig")
+    elif kind == "dataframe":
+        source = pd.DataFrame(rows)
+    else:
+        source = (row for row in rows)
+    result = normalize_source_inventory(source, config)
+    assert [row["canvas_key"] for row in result] == ["/1.jpg", "/2.jpg"]
+    assert [row["image_url"] for row in result] == [rows[1]["url"], rows[0]["url"]]
+    assert rows == [source_row(2), source_row(1)]
+
+
+@pytest.mark.parametrize("name,content,message", [
+    ("images.txt", "[]", "must be CSV or JSON"),
+    ("images.json", '{"wrong": []}', "Expected a list of inventory rows"),
+    ("images.json", '[42]', "Expected a list of inventory rows"),
+])
+def test_invalid_inventory_file_shapes_fail_before_modeling(config, tmp_path, name, content, message):
+    path = tmp_path / name
+    path.write_text(content)
+    with pytest.raises(SourceInventoryError, match=message):
+        normalize_source_inventory(path, config)
+
+
+@pytest.mark.parametrize("section,value,message", [
+    ("columns", {}, "Map imageKey"),
+    ("grouping", {"mode": "unknown"}, "Specify manifest grouping"),
+    ("grouping", {"mode": "field"}, "Choose the manifest grouping field"),
+    ("ordering", {"mode": "unknown"}, "Unknown image ordering mode"),
+    ("recordLink", {"normalization": "unknown"}, "Unknown join normalization"),
+])
+def test_inventory_configuration_errors_are_explicit(config, section, value, message):
+    config[section] = value
+    with pytest.raises(SourceInventoryError, match=message):
+        normalize_source_inventory([source_row(1)], config)
+
+
+@pytest.mark.parametrize("changes,message", [
+    ({"filename": ""}, "missing image key"),
+    ({"filename": float("nan")}, "missing image key"),
+    ({"url": "https://[invalid"}, "absolute HTTP"),
+    ({"url": "https://images.test/a b"}, "absolute HTTP"),
+    ({"media_type": "text/html"}, "image MIME type"),
+    ({"filename": "/-1.jpg"}, "Not a page number"),
+])
+def test_inventory_invalid_row_diagnostics(config, changes, message):
+    with pytest.raises(SourceInventoryError, match=message):
+        normalize_source_inventory([source_row(1, **changes)], config)
+
+
+def test_inventory_empty_rows_missing_groups_and_conflicting_labels(config):
+    with pytest.raises(SourceInventoryError, match="inventory is empty"):
+        normalize_source_inventory([], config)
+    config["grouping"] = {"mode": "field", "field": "volume", "labelField": "title"}
+    with pytest.raises(SourceInventoryError, match="missing manifest group"):
+        normalize_source_inventory([source_row(1)], config)
+    with pytest.raises(SourceInventoryError, match="Conflicting labels"):
+        normalize_source_inventory([
+            source_row(1, volume="a", title="Volume A"),
+            source_row(2, volume="a", title="Different title"),
+        ], config)
+
+
+def test_inventory_rejects_info_endpoint_as_service_root(config):
+    config["columns"]["serviceUrl"] = "service"
+    with pytest.raises(SourceInventoryError, match="without /info.json"):
+        normalize_source_inventory([source_row(1, service="https://images.test/a/info.json")], config)
+
+
+def test_inventory_numeric_order_is_independent_of_filename(config):
+    config["ordering"] = {"mode": "numeric", "field": "rank"}
+    result = normalize_source_inventory([
+        source_row(1, rank="10"), source_row(2, rank="2.5"),
+    ], config)
+    assert [row["canvas_key"] for row in result] == ["/2.jpg", "/1.jpg"]
+    assert [row["canvas_position"] for row in result] == [1, 2]
+    for rank in ("not numeric", "Infinity"):
+        with pytest.raises(SourceInventoryError, match="ordering value must be numeric"):
+            normalize_source_inventory([source_row(1, rank=rank)], config)
+
+
+@pytest.mark.parametrize("suffix,message", [
+    ("full/max/0/default.jpg#part", "must not contain a fragment"),
+    ("invalid/max/0/default.jpg", "IIIF region"),
+    ("full/invalid/0/default.jpg", "IIIF size"),
+    ("full/max/invalid/default.jpg", "IIIF image request"),
+    ("full/max/0/default.bad-format", "IIIF image request"),
+])
+def test_image_service_inference_rejects_invalid_request_components(suffix, message):
+    with pytest.raises(SourceInventoryError, match=message):
+        image_service_from_request("https://images.test/iiif/3/book/" + suffix)
+
+
+@pytest.mark.parametrize("settings,message", [
+    ({"recordImageField": "page", "missing": "error"}, "stable record key"),
+    ({"recordKeyField": "id", "recordImageField": "page"}, "missing-link policy"),
+])
+def test_record_link_configuration_errors(config, settings, message):
+    inventory = normalize_source_inventory([source_row(1)], config)
+    config["recordLink"] = settings
+    with pytest.raises(SourceInventoryError, match=message):
+        link_source_records(inventory, [], config, {})
+
+
+@pytest.mark.parametrize("records,ids,diagnostic,expected", [
+    ([{"id": "", "page": 1}], {}, "duplicate_record_keys", [""]),
+    ([{"id": "a", "page": 1}] * 2, {"a": uuid_for(1)}, "duplicate_record_keys", ["a"]),
+    ([{"id": "a", "page": 1}], {}, "missing_hr_ids", ["a"]),
+    ([{"id": "a", "page": 1}], {"a": ["not-a-uuid"]}, "missing_hr_ids", ["a"]),
+    ([{"id": "a", "page": float("inf")}], {}, "invalid_references",
+     [{"record_key": "a", "value": "inf"}]),
+])
+def test_broken_record_identities_remain_fatal_when_missing_links_allowed(
+    config, records, ids, diagnostic, expected,
+):
+    inventory = normalize_source_inventory([source_row(1)], config)
+    config["recordLink"]["missing"] = "allow-unlinked"
+    with pytest.raises(SourceInventoryError) as error:
+        link_source_records(inventory, records, config, ids)
+    assert error.value.report[diagnostic] == expected
+    assert error.value.report["record_count"] == len(records)
+
+
+def test_empty_reference_arrays_are_reported_and_blank_join_keys_never_match(config):
+    config["recordLink"].update(imageJoinField="join", missing="allow-unlinked")
+    inventory = normalize_source_inventory([
+        source_row(1, join=None), source_row(2, join=2),
+    ], config)
+    links, report = link_source_records(inventory, [
+        {"id": "a", "page": []}, {"id": "b", "page": [None, ""]},
+        {"id": "c", "page": 2},
+    ], config, {"c": [uuid_for(1), uuid_for(2)]})
+    assert report["missing_references"] == ["a", "b"]
+    assert report["unlinked_images"] == ["/1.jpg"]
+    assert report["linked_record_count"] == 1
+    assert {link["hr_id"] for link in links} == {uuid_for(1), uuid_for(2)}
+    assert all(link["canvas_key"] == "/2.jpg" for link in links)
+
+
+@pytest.mark.parametrize("label", [
+    MultiLingualValue({"en": ["Book"], "it": ["Libro"]}),
+    {"en": "Book", "it": ["Libro"]},
+])
+def test_collection_accepts_multilingual_labels_without_flattening(config, label):
+    inventory = normalize_source_inventory([source_row(1)], config)
+    collection, _ = build_source_collection(
+        inventory, uuid_manager=UUIDManager("https://test.example/labels"),
+        collection_key="book", collection_label=label, allow_unlinked=True,
+    )
+    assert collection.label.values == {"en": ["Book"], "it": ["Libro"]}
+    assert collection.items[0].label.values == collection.label.values
+
+
+def test_collection_builder_rejects_incomplete_or_inconsistent_inputs(config):
+    manager = UUIDManager("https://test.example/invalid-collection")
+    inventory = normalize_source_inventory([source_row(1)], config)
+    options = dict(uuid_manager=manager, collection_key="book", collection_label="Book")
+    with pytest.raises(SourceInventoryError, match="nonempty source inventory"):
+        build_source_collection([], **options)
+    with pytest.raises(SourceInventoryError, match="stable collection key"):
+        build_source_collection(inventory, **{**options, "collection_key": " "})
+    with pytest.raises(SourceInventoryError, match="Duplicate canvas key"):
+        build_source_collection(inventory * 2, **options)
+    with pytest.raises(SourceInventoryError, match="explicitly allow unlinked"):
+        build_source_collection(inventory, **options)
+    for link in [
+        {"manifest_key": "missing", "canvas_key": "/1.jpg", "hr_id": uuid_for(1)},
+        {"manifest_key": "source", "canvas_key": "/1.jpg", "hr_id": "invalid"},
+    ]:
+        with pytest.raises(SourceInventoryError, match="Invalid source link"):
+            build_source_collection(inventory, links=[link], **options)
+
+
+def test_source_writers_reject_empty_inventory_and_non_document_children(config, tmp_path):
+    with pytest.raises(SourceInventoryError, match="empty source inventory"):
+        write_source_inventory([], tmp_path / "inventory.csv")
+    manager = UUIDManager("https://test.example/writers")
+    inventory = normalize_source_inventory([source_row(1)], config)
+    collection, _ = build_source_collection(
+        inventory, uuid_manager=manager, collection_key="book", collection_label="Book",
+        allow_unlinked=True,
+    )
+    collection.items = collection.items[0].items
+    with pytest.raises(SourceInventoryError, match="Expected a Document or Collection"):
+        write_source_collection(collection, uuid_manager=manager, output_dir=tmp_path / "output")
