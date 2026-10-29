@@ -2,8 +2,9 @@
 
 Supported manifests have one embedded image painting per canvas and one
 advertised ImageService2/3. Original manifest boundaries and canvas order are
-preserved. Complex compositions and ranges fail explicitly instead of being
-flattened. Source HR annotations are never copied to the new dataset.
+preserved. Optional navigation ranges are not copied or used to reorder the
+canvases. Complex image compositions fail explicitly instead of being flattened.
+Source HR annotations are never copied to the new dataset.
 """
 from __future__ import annotations
 
@@ -11,8 +12,74 @@ import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from .SourceInventory import SourceInventoryError, _http_url, _join_key, _positive_int, _text
+from .SourceInventory import (
+    SourceInventoryError, _http_url, _join_key, _positive_int, _text,
+    image_service_from_request,
+)
+
+
+def _image_media_type(body: Mapping, image_url: str) -> str:
+    """Use the delivered Image API format, never the service identifier suffix.
+
+    Some source manifests describe an archival TIFF in ``format`` although
+    their painting URL explicitly requests JPEG. A complete Image API request
+    makes its response format unambiguous. Other URLs retain the declared MIME
+    type, and the source manifest is never mutated.
+    """
+    media_type = _text(body.get("format"))
+    if not re.fullmatch(r"image/[a-zA-Z0-9.+-]+", media_type):
+        raise SourceInventoryError("The image body must specify its image MIME format")
+    try:
+        image_service_from_request(image_url)
+    except SourceInventoryError:
+        return media_type
+    request_format = urlsplit(image_url).path.rsplit(".", 1)[-1].lower()
+    requested_types = {"jpg": "image/jpeg", "png": "image/png", "tif": "image/tiff",
+                       "gif": "image/gif", "webp": "image/webp", "jp2": "image/jp2"}
+    return requested_types.get(request_format, media_type)
+
+
+def _canonical_manifest_image_urls(image_url: str, service_url: str) -> tuple[str, str]:
+    """Collapse duplicate separators only in a matching path-style IIIF pair.
+
+    This compatibility rule is limited to file identifiers below an explicit
+    /iiif/2/ or /iiif/3/ prefix. Opaque identifiers, arbitrary service paths and
+    unrelated image/service URLs are not rewritten. Single separators and all
+    URL components outside the identifier retain their exact spelling.
+    """
+    image = urlsplit(image_url)
+    service = urlsplit(service_url)
+    try:
+        request_root = urlsplit(image_service_from_request(image_url.partition("#")[0]))
+    except SourceInventoryError:
+        return image_url, service_url
+    if (request_root.scheme, request_root.netloc) != (service.scheme, service.netloc):
+        return image_url, service_url
+
+    def canonical_path(path):
+        match = re.fullmatch(r"(.*?/iiif/[23]/)(.+\.(?:jpe?g|png|tiff?|jp2|webp|gif))", path, re.IGNORECASE)
+        if not match:
+            return None
+        # Encode a collapsed separator so it remains part of the image
+        # identifier. Never decode the identifier or normalize dot segments.
+        identifier = re.sub(r"(?:/|%2f){2,}", "%2F", match[2], flags=re.IGNORECASE)
+        return match[1] + identifier
+
+    canonical_service = canonical_path(service.path)
+    canonical_request = canonical_path(request_root.path)
+    if canonical_service is None or canonical_request != canonical_service:
+        return image_url, service_url
+
+    def replace_path(url, parsed, path):
+        # urlunsplit would normalize scheme spelling and empty ?/# markers.
+        # Slice the original instead, preserving queries/fragments bytewise.
+        start = url.index("://") + 3 + len(parsed.netloc)
+        return url[:start] + path + url[start + len(parsed.path):]
+
+    image_path = canonical_request + image.path[len(request_root.path):]
+    return replace_path(image_url, image, image_path), replace_path(service_url, service, canonical_service)
 
 
 def _list(value) -> list:
@@ -167,7 +234,10 @@ def normalize_source_manifests(manifests, config: Mapping) -> list[dict]:
     Host code downloads ``config.manifestUrls`` before calling this function.
     ``recordLink.imageJoinField`` is one of canvas_id, canvas_label, image_url,
     or image_service_url. Existing grouping/ordering and image-service settings
-    are ignored: the manifest itself supplies that information.
+    are ignored: the manifest itself supplies that information. Optional
+    ``structures`` describe navigation, not painting order: they are omitted
+    from the generated manifests, whose pages follow the complete top-level
+    canvas list (or the single Presentation 2 sequence).
     """
     if isinstance(manifests, (str, Path, Mapping)):
         manifests = [manifests]
@@ -195,8 +265,9 @@ def normalize_source_manifests(manifests, config: Mapping) -> list[dict]:
         if manifest_id in seen_manifests:
             raise SourceInventoryError(f"Duplicate source manifest: {manifest_id}")
         seen_manifests.add(manifest_id)
-        if manifest.get("structures"):
-            raise SourceInventoryError("Source manifests with nonempty ranges/structures are not supported yet")
+        # Ranges may reorder, repeat or omit canvases for navigation. The
+        # authoritative painting sequence below supplies every page once;
+        # source range IDs must not be copied into the new dataset.
         if manifest.get("type") == "Manifest":
             version = 3
             canvases = manifest.get("items")
@@ -228,10 +299,9 @@ def normalize_source_manifests(manifests, config: Mapping) -> list[dict]:
                 if (_positive_int(canvas.get("width"), "Canvas width"),
                     _positive_int(canvas.get("height"), "Canvas height")) != (width, height):
                     raise SourceInventoryError("Differing image/canvas dimensions require a composition adapter and are unsupported")
-                media_type = _text(body.get("format"))
-                if not re.fullmatch(r"image/[a-zA-Z0-9.+-]+", media_type):
-                    raise SourceInventoryError("The image body must specify its image MIME format")
+                media_type = _image_media_type(body, image_url)
                 service_url, service_type, service_profile = _image_service(body)
+                image_url, service_url = _canonical_manifest_image_urls(image_url, service_url)
                 original_canvas_labels = _labels(canvas.get("label"))
                 canvas_labels = original_canvas_labels or {"none": [f"Page {canvas_position}"]}
                 row = {

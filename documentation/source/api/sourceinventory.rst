@@ -138,10 +138,33 @@ metadata and one advertised ImageService2/3. Version 2 string/language labels
 and attribution are translated to Presentation 3 language maps and
 requiredStatement. Service profiles are normalized to their advertised
 compliance level; the downloaded source snapshot retains any extra service
-capability details.
+capability details. For a complete Image API request, a recognized output format
+in the painting URL takes precedence over the declared image MIME type: a TIFF
+service identifier requesting ``default.jpg`` produces ``image/jpeg``. Other
+URLs retain their declared MIME type. Source snapshots are unchanged.
 
-Unsupported input fails explicitly: Collections, multiple sequences, nonempty
-ranges/structures, referenced AnnotationPages, Choice/multiple painting bodies,
+For matching image-request/service pairs with a file-style identifier below
+``/iiif/2/`` or ``/iiif/3/``, duplicate identifier separators (literal ``/``,
+encoded ``%2F`` or a mixture) collapse to one encoded separator. For example,
+``venice%2F%2Fcatastici%2F001.tif`` becomes
+``venice%2Fcatastici%2F001.tif`` consistently in the image and service URL.
+This compatibility rule treats those identifiers as filesystem-style paths;
+opaque identifiers and arbitrary URL prefixes are never rewritten. Valid single
+separators, other escapes, host/scheme spelling, queries and fragments remain
+unchanged. Original canvas objects remain available in the source snapshots for
+authored record joins; normalized inventory URL fields contain the canonical
+values. This rule does not alter the CSV-inventory or image-URL-list adapters.
+
+Optional ``structures`` (navigation ranges/tables of contents) are accepted but
+not copied. They can repeat, omit or reorder canvas references independently of
+the page sequence. All pages follow the manifest's top-level ``items`` order
+(or its single Presentation 2 sequence), once each, including pages absent from
+the ranges. Each supplied manifest stays a separate volume; the collection
+follows the supplied manifest order. Rebuilding the original navigation hierarchy
+is outside this adapter's scope.
+
+Unsupported input fails explicitly: Collections, multiple sequences,
+referenced AnnotationPages, Choice/multiple painting bodies,
 region or composite layouts, differing image/canvas dimensions and missing
 required metadata. No remote image enrichment or source annotation copying
 occurs in this adapter.

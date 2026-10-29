@@ -475,9 +475,12 @@ class Page(UUIDEntity, RDE):
             profile = self.image_service_profile
             if version_two and profile in {"level0", "level1", "level2"}:
                 profile = f"http://iiif.io/api/image/2/{profile}.json"
+            # This object is serialized inside a Presentation API 3 manifest.
+            # ImageService2 describes the Image API version, not the JSON-LD
+            # identifier syntax: P3 still requires `id` and `type` here.
             body["service"] = [{
-                "@id" if version_two else "id": service_url,
-                "@type" if version_two else "type": self.image_service_type,
+                "id": service_url,
+                "type": self.image_service_type,
                 "profile": profile,
             }]
         return body
